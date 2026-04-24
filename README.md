@@ -195,6 +195,26 @@ correct per-site isolation, not a naming artefact.
 
 ---
 
+## Network invariants
+
+Two Docker networks are in play per NAS:
+
+- **`nas-deploy`** (external, shared) — hosts the singleton
+  `webhook` container and each site's `caddy` container. The
+  ONLY DNS resolution that happens over this network is each
+  Caddy looking up `webhook:9000`. Nothing else.
+- **`internal`** (external: false, per-compose-project) —
+  hosts a site's `site` container and its `sveltia-auth`
+  container. Each site's compose creates its own `internal`
+  network, so service names (`site`, `sveltia-auth`) are
+  scoped per-project and can't collide across sites.
+
+**Invariant for `nas-deploy`**: only the shared webhook and
+per-site Caddys may join it. Adding any other service to
+`nas-deploy` — especially one with a common service name —
+risks cross-site DNS collisions. Site-scoped services stay on
+their project's `internal` network.
+
 ## Related repos
 
 - [den-frie-vilje/skovbyesexologi.com](https://github.com/den-frie-vilje/skovbyesexologi.com)
