@@ -1,0 +1,70 @@
+# Webhook receiver — shared across all sites on this NAS.
+#
+# Listens on :9000 (reachable only via each site's Caddy
+# front-door, which proxies /hooks/* to this container).
+# Verifies HMAC on every POST against per-site secrets in
+# ./webhook.env, then executes the matching deploy script.
+#
+# Image is built by nas-sites' `webhook-image.yml` workflow
+# and published as a public GHCR image — see the Dockerfile
+# in this directory.
+#
+# Lifecycle: this compose is bootstrapped ONCE during initial
+# NAS setup and does not update itself via the regular deploy
+# pipeline. Updates are manual (`docker compose pull && up -d`
+# by hand) to avoid the chicken-and-egg failure mode where a
+# broken webhook upgrade leaves us unable to deploy anything
+# including the webhook itself.
+
+name: nas-webhook
+
+networks:
+  # Shared docker network — every per-site Caddy joins this
+  # network so it can reach the webhook container by name.
+  # Create on the NAS once with `docker network create nas-deploy`
+  # before bringing this stack up.
+  nas-deploy:
+    external: true
+
+services:
+  webhook:
+    # Built by nas-sites/.github/workflows/webhook-image.yml,
+    # multi-arch (amd64 + arm64). GHCR package MUST be public
+    # so the NAS can pull without authentication — set via the
+    # GHCR package settings after the first push.
+    image: ghcr.io/den-frie-vilje/nas-webhook:latest
+    pull_policy: always
+    restart: unless-stopped
+    networks: [nas-deploy]
+    # No host port exposure — only reachable via the per-site
+    # Caddys, which are on the same docker network.
+    env_file:
+      - ./webhook.env
+    volumes:
+      # Docker socket → the webhook runs `docker compose`
+      # commands against the host daemon. Equivalent to root
+      # on the host, but privilege is capped by the fixed list
+      # of commands in hooks.yaml.
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      # Hooks config: HMAC-verified endpoint definitions. With
+      # `-hotreload` on the webhook command, edits are picked up
+      # live. Writable (not :ro) so deploy.sh can self-sync it
+      # from each site's repo clone on every fire.
+      - ./webhook/hooks.yaml:/etc/webhook/hooks.yaml
+
+      # Deploy scripts. Writable so scripts can self-update from
+      # the repo. See deploy.sh's self-replace block.
+      - ./webhook/scripts:/scripts
+
+      # Docker data root — same path inside the container as on
+      # the host, so `docker compose -f …` sees the compose file
+      # and the host daemon sees bind-mount sources consistently.
+      - /volume1/docker:/volume1/docker
+    command:
+      - -verbose
+      - -template                              # evaluate Go-template syntax in hooks.yaml — lets `{{ getenv `FOO` }}` in trigger-rule `secret:` pull from container env at hook-load time. Without this the string is taken literally, HMAC eval panics, and every POST returns 500.
+      - -hooks=/etc/webhook/hooks.yaml
+      - -hotreload                             # re-read hooks.yaml on every modification — new sites' hook entries land without a container restart
+      - -ip=0.0.0.0
+      - -port=9000

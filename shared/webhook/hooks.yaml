@@ -1,0 +1,91 @@
+# Hook definitions for the shared deploy webhook.
+#
+# Conventions:
+#   id path              /deploy/<domain>/<env>
+#   script               /scripts/deploy.sh
+#   script args          <domain> <env>     (both static — never
+#                                            read from the JSON
+#                                            body, so attackers
+#                                            with a valid HMAC
+#                                            for one site can't
+#                                            pivot to another)
+#   HMAC secret env var  <DOMAIN_SAFE>_<ENV>_WEBHOOK_SECRET
+#                        (DOMAIN_SAFE = upper, dots→underscores)
+#
+# Public URLs GH Actions POSTs to (for one site example.com):
+#   https://example-com.stage.denfrievilje.dk/hooks/deploy/example.com/staging
+#   https://example-com.prod.denfrievilje.dk/hooks/deploy/example.com/production
+#
+# include-command-output-in-response MUST stay true on each
+# hook — it's what makes the webhook block until deploy.sh
+# completes and reflect its exit code in the HTTP response.
+# Without it, CI thinks every deploy succeeded just because
+# the HMAC verified.
+#
+# `-hotreload` on the webhook command means edits to this file
+# are picked up live. `deploy.sh` auto-syncs this file from the
+# per-site repo clone on every fire, so adding a hook is a
+# one-commit operation after the first site's bootstrap.
+#
+# =============================================================
+# Template for a new site (copy, replace <domain> and
+# <DOMAIN_SAFE>):
+#
+# - id: deploy/<domain>/staging
+#   execute-command: /scripts/deploy.sh
+#   command-working-directory: /scripts
+#   pass-arguments-to-command:
+#     - { source: string, name: <domain> }
+#     - { source: string, name: staging }
+#   include-command-output-in-response: true
+#   include-command-output-in-response-on-error: true
+#   trigger-rule:
+#     match:
+#       type: payload-hmac-sha256
+#       secret: "{{ getenv `<DOMAIN_SAFE>_STAGING_WEBHOOK_SECRET` }}"
+#       parameter: { source: header, name: X-Hub-Signature-256 }
+#
+# - id: deploy/<domain>/production
+#   (same shape with production + <DOMAIN_SAFE>_PRODUCTION_WEBHOOK_SECRET)
+# =============================================================
+
+# ============================================================
+# Real site entries below. Append per new site.
+# ============================================================
+
+# skovbyesexologi.com
+- id: deploy/skovbyesexologi.com/staging
+  execute-command: /scripts/deploy.sh
+  command-working-directory: /scripts
+  pass-arguments-to-command:
+    - source: string
+      name: skovbyesexologi.com
+    - source: string
+      name: staging
+  include-command-output-in-response: true
+  include-command-output-in-response-on-error: true
+  trigger-rule:
+    match:
+      type: payload-hmac-sha256
+      secret: "{{ getenv `SKOVBYESEXOLOGI_COM_STAGING_WEBHOOK_SECRET` }}"
+      parameter:
+        source: header
+        name: X-Hub-Signature-256
+
+- id: deploy/skovbyesexologi.com/production
+  execute-command: /scripts/deploy.sh
+  command-working-directory: /scripts
+  pass-arguments-to-command:
+    - source: string
+      name: skovbyesexologi.com
+    - source: string
+      name: production
+  include-command-output-in-response: true
+  include-command-output-in-response-on-error: true
+  trigger-rule:
+    match:
+      type: payload-hmac-sha256
+      secret: "{{ getenv `SKOVBYESEXOLOGI_COM_PRODUCTION_WEBHOOK_SECRET` }}"
+      parameter:
+        source: header
+        name: X-Hub-Signature-256

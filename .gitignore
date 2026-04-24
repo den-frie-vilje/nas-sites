@@ -1,0 +1,9 @@
+# NAS-side runtime env files — real values (HMAC keys, CF API
+# tokens, DSM OAuth secrets, Sveltia OAuth App secrets) live
+# only on each NAS. Committed *.example files document shape.
+shared/webhook/webhook.env
+**/*.env
+!**/*.env.example
+
+.DS_Store
+*.log

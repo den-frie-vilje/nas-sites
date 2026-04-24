@@ -1,0 +1,206 @@
+# Reusable workflow: build a site image, push to GHCR, POST an
+# HMAC-signed trigger to the NAS deploy webhook, smoke-check
+# the live URL.
+#
+# Framework-agnostic: this workflow has NO language/build-tool
+# assumptions. All build logic (pnpm, vite, pip, go, etc.) lives
+# in the caller's Dockerfile. This workflow's only job is to:
+#
+#   1. docker buildx build + push (multi-arch)
+#   2. Paranoia-scan the pushed image for leaked-secret shapes
+#   3. POST an HMAC-signed trigger to the NAS webhook
+#   4. Smoke-check the live URL (non-fatal)
+#
+# Invoked from each consumer site's `deploy-<env>.yml` via
+#   `uses: den-frie-vilje/nas-sites/.github/workflows/build-and-notify.yml@main`
+
+name: Build and notify (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'staging or production — used for env-scoped secrets/approvals + image tag prefix.'
+        required: true
+        type: string
+      dockerfile:
+        description: 'Path to the Dockerfile in the caller repo. Typically `deploy/Dockerfile`.'
+        required: false
+        type: string
+        default: deploy/Dockerfile
+      build-context:
+        description: 'Docker build context path (relative to caller repo root).'
+        required: false
+        type: string
+        default: .
+      build-args:
+        description: 'Newline-separated KEY=VALUE build args passed to docker build. Caller typically sets PUBLIC_GIT_SHA + PUBLIC_BUILD_TIME here for build-time Vite/bundler substitution.'
+        required: false
+        type: string
+        default: ''
+      image-name:
+        description: 'GHCR image name, e.g. ghcr.io/den-frie-vilje/example-site. Tags are added by this workflow.'
+        required: true
+        type: string
+      platforms:
+        description: 'Comma-separated buildx platforms. Default linux/amd64,linux/arm64 so built images run on both NAS (amd64) and M-series Macs (arm64).'
+        required: false
+        type: string
+        default: linux/amd64,linux/arm64
+      webhook-url:
+        description: 'Full URL to POST the deploy trigger, e.g. https://example-com.stage.denfrievilje.dk/hooks/deploy/example.com/staging'
+        required: true
+        type: string
+      smoke-check-url:
+        description: 'Post-deploy URL to GET; logs the response code. Non-fatal.'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      WEBHOOK_SECRET:
+        description: 'HMAC-SHA256 shared secret for the /hooks/deploy/<...> endpoint. Must match the value the NAS webhook has in its env.'
+        required: true
+
+# One deploy per environment at a time. Don't cancel — finishing a
+# mid-deploy is better than leaving an inconsistent NAS state.
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate image tags
+        id: tags
+        run: |
+          TS="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
+          SHA8="${GITHUB_SHA::8}"
+          IMMUTABLE_TAG="${{ inputs.environment }}-${TS}-${SHA8}"
+          MOVING_TAG="${{ inputs.environment }}-latest"
+          {
+            echo "immutable=${{ inputs.image-name }}:${IMMUTABLE_TAG}"
+            echo "moving=${{ inputs.image-name }}:${MOVING_TAG}"
+            echo "immutable-short=${IMMUTABLE_TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log into GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        # Needed for multi-arch builds — linux/arm64 on amd64 runners
+        # goes through QEMU emulation. Slow but ~free.
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.build-context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.immutable }}
+            ${{ steps.tags.outputs.moving }}
+          build-args: ${{ inputs.build-args }}
+          cache-from: type=registry,ref=${{ steps.tags.outputs.moving }}
+          cache-to: type=inline
+
+      - name: Paranoia — no secrets in the image
+        # Scan the image filesystem for value-assignment patterns
+        # that look like leaked secrets, and for private-key
+        # headers. Matches on KEY=value shape, not bare names, so
+        # comments/docs that mention a variable name don't trigger
+        # false positives.
+        #
+        # Note: we only pull + scan the amd64 variant (the runner
+        # arch). If the arm64 variant differs in content, our scan
+        # wouldn't catch its leaks — but with multi-stage Dockerfiles
+        # the content is identical across arches, only the binaries
+        # differ.
+        run: |
+          docker pull --platform=linux/amd64 ${{ steps.tags.outputs.immutable }}
+          LEAKED=$(docker run --rm --entrypoint sh --platform=linux/amd64 ${{ steps.tags.outputs.immutable }} -c '
+            # Value-assignment: KEY[=:]value-with-12+-chars.
+            grep -rEn "(GITHUB_TOKEN|(OAUTH_)?CLIENT_SECRET|API_KEY|WEBHOOK_SECRET)[[:space:]]*[=:][[:space:]]*[A-Za-z0-9_/+=-]{12,}" \
+              /usr/share/nginx/html/ /app/ 2>/dev/null
+            # Any private-key header is always a leak.
+            grep -rn "BEGIN OPENSSH PRIVATE KEY\|BEGIN RSA PRIVATE KEY\|BEGIN EC PRIVATE KEY\|BEGIN PRIVATE KEY" \
+              /usr/share/nginx/html/ /app/ 2>/dev/null
+            :
+          ')
+          if [ -n "$LEAKED" ]; then
+            echo "::error::Possible secret leaked into image"
+            echo "$LEAKED"
+            exit 1
+          fi
+
+      - name: Trigger NAS deploy webhook
+        # HMAC-SHA256 body sign. Header name matches GitHub's own
+        # webhook signing format so the receiver can reuse standard
+        # verification. The webhook is configured to block until
+        # deploy.sh completes and reflect its exit code in the HTTP
+        # response (include-command-output-in-response: true in
+        # shared/webhook/hooks.yaml), so a non-200 response here
+        # means a real deploy failure, not just a misrouted POST.
+        env:
+          SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          URL: ${{ inputs.webhook-url }}
+          IMAGE_TAG: ${{ steps.tags.outputs.immutable-short }}
+          COMMIT: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          BODY=$(jq -cn \
+            --arg tag "$IMAGE_TAG" \
+            --arg sha "$COMMIT" \
+            --arg run "$RUN_URL" \
+            '{image_tag: $tag, commit_sha: $sha, run_url: $run}')
+          SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $2}')"
+          echo "POSTing to $URL"
+          HTTP_CODE=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' \
+            -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "X-Hub-Signature-256: $SIG" \
+            --data "$BODY" \
+            --max-time 180 \
+            --retry 3 --retry-delay 5 --retry-connrefused)
+          echo "webhook HTTP $HTTP_CODE"
+          cat /tmp/resp.txt || true
+          [ "$HTTP_CODE" = "200" ] || exit 1
+
+      - name: Smoke check the live URL
+        if: inputs.smoke-check-url != ''
+        continue-on-error: true
+        run: |
+          URL="${{ inputs.smoke-check-url }}"
+          sleep 10
+          curl -sS -o /dev/null -w "GET %{url_effective}\n  http %{http_code}\n  time %{time_total}s\n" "$URL"
+
+      - name: Summary
+        run: |
+          {
+            echo "## Deployed"
+            echo ""
+            echo "- Environment: **${{ inputs.environment }}**"
+            echo "- Image tag: \`${{ steps.tags.outputs.immutable-short }}\`"
+            echo "- Commit: \`${GITHUB_SHA::8}\`"
+            echo "- Platforms: \`${{ inputs.platforms }}\`"
+            echo "- Webhook: \`${{ inputs.webhook-url }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
