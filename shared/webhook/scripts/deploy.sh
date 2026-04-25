@@ -71,34 +71,54 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 git -C "$REPO" fetch --depth 1 origin "$BRANCH"
 git -C "$REPO" reset --hard FETCH_HEAD
 
-# Self-update the webhook's copy of deploy.sh from whatever
-# version was just pulled. Without this, fixes to the script
-# require a manual `sudo cp` bootstrap step per update, which
-# is easy to forget and leads to "the old deploy.sh is
-# silently breaking things" debugging sessions. With this
-# block, any deploy.sh push lands on the NEXT webhook fire
-# automatically.
+# Self-update from the NAS-side `nas-sites` clone. The webhook
+# scripts + hooks.yaml are SHARED across every site on this NAS
+# — they live in github.com/den-frie-vilje/nas-sites and the
+# NAS keeps a local clone at $NAS_SITES (bootstrap step in
+# nas-sites/docs/NAS-BOOTSTRAP.md). On every fire we git-pull
+# that clone, then propagate any changes to the webhook's
+# mounted /scripts/deploy.sh and /etc/webhook/hooks.yaml.
 #
-# The volume mount at /scripts is read-write (see compose.webhook.yml)
-# so the script CAN overwrite itself. After overwriting we
-# re-exec so the current deploy runs under the new logic, not
-# the old one that started this process.
-NEW_SELF="$REPO/deploy/webhook/scripts/deploy.sh"
-if [ -f "$NEW_SELF" ] && ! cmp -s "$NEW_SELF" "$0"; then
-    echo "[$(date -Iseconds)] deploy.sh updated in repo; self-replacing + re-exec"
-    cp "$NEW_SELF" "$0"
-    chmod +x "$0"
-    exec "$0" "$@"
-fi
+# This way: any commit to nas-sites' shared/webhook/** lands
+# on the NEXT deploy fire automatically — no manual `sudo cp`
+# per update. The /scripts mount and /etc/webhook/hooks.yaml
+# bind are both :rw specifically so this can overwrite them
+# (see compose.yml). After overwriting deploy.sh we re-exec
+# so the current deploy runs under the new logic, not the
+# stale logic that started this process.
+#
+# History note: pre-extraction, this block read from
+# $REPO/deploy/webhook/... (per-site repo). PR #4 moved the
+# webhook plumbing OUT of consumer repos into nas-sites, but
+# the paths here weren't updated, so self-update silently
+# no-op'd between the extraction and this fix.
+NAS_SITES=/volume1/docker/webhook/nas-sites
+if [ -d "$NAS_SITES/.git" ]; then
+    # Non-fatal: a transient network failure shouldn't block a
+    # deploy — the cached clone is good enough for a fallback.
+    if ! { git -C "$NAS_SITES" fetch --depth 1 origin main \
+        && git -C "$NAS_SITES" reset --hard FETCH_HEAD; } 2>/dev/null
+    then
+        echo "[$(date -Iseconds)] warn: nas-sites fetch failed; using cached clone"
+    fi
 
-# Also self-sync hooks.yaml. Bind-mounted to /etc/webhook/hooks.yaml
-# (writable); webhook's -hotreload flag picks up any change within
-# a second. So hooks-yaml changes in a commit propagate on the NEXT
-# webhook fire without a manual `sudo cp`.
-NEW_HOOKS="$REPO/deploy/webhook/hooks.yaml"
-if [ -f "$NEW_HOOKS" ] && ! cmp -s "$NEW_HOOKS" /etc/webhook/hooks.yaml; then
-    echo "[$(date -Iseconds)] hooks.yaml updated in repo; copying"
-    cp "$NEW_HOOKS" /etc/webhook/hooks.yaml
+    NEW_SELF="$NAS_SITES/shared/webhook/scripts/deploy.sh"
+    if [ -f "$NEW_SELF" ] && ! cmp -s "$NEW_SELF" "$0"; then
+        echo "[$(date -Iseconds)] deploy.sh updated in nas-sites; self-replacing + re-exec"
+        cp "$NEW_SELF" "$0"
+        chmod +x "$0"
+        exec "$0" "$@"
+    fi
+
+    NEW_HOOKS="$NAS_SITES/shared/webhook/hooks.yaml"
+    if [ -f "$NEW_HOOKS" ] && ! cmp -s "$NEW_HOOKS" /etc/webhook/hooks.yaml; then
+        echo "[$(date -Iseconds)] hooks.yaml updated in nas-sites; copying"
+        cp "$NEW_HOOKS" /etc/webhook/hooks.yaml
+    fi
+else
+    # Loud failure: surfaces a misbootstrapped NAS instead of
+    # silently freezing self-update like the previous regression.
+    echo "[$(date -Iseconds)] warn: $NAS_SITES is not a git clone — self-update disabled (see nas-sites/docs/NAS-BOOTSTRAP.md)"
 fi
 
 cd "$STACK_DIR"

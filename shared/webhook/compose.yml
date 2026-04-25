@@ -50,11 +50,12 @@ services:
       # Hooks config: HMAC-verified endpoint definitions. With
       # `-hotreload` on the webhook command, edits are picked up
       # live. Writable (not :ro) so deploy.sh can self-sync it
-      # from each site's repo clone on every fire.
+      # from the NAS-side nas-sites clone on every fire.
       - ./webhook/hooks.yaml:/etc/webhook/hooks.yaml
 
-      # Deploy scripts. Writable so scripts can self-update from
-      # the repo. See deploy.sh's self-replace block.
+      # Deploy scripts. Writable so deploy.sh can self-replace
+      # itself from the NAS-side nas-sites clone on every fire.
+      # See deploy.sh's NAS_SITES self-update block.
       - ./webhook/scripts:/scripts
 
       # Docker data root — same path inside the container as on

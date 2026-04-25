@@ -28,19 +28,38 @@ inbound services beyond :443.
    sudo docker network create nas-deploy
    ```
 4. **Shared webhook container**:
+
+   The NAS keeps a permanent shallow clone of `nas-sites` at
+   `/volume1/docker/webhook/nas-sites/`. `deploy.sh` git-pulls
+   this clone on every fire and propagates any changes to the
+   webhook's mounted `hooks.yaml` + `scripts/deploy.sh` (see
+   the `NAS_SITES` self-update block in `deploy.sh`). So bootstrap
+   does TWO things: (1) the persistent clone for self-update,
+   (2) the initial copy of the webhook artefacts into the
+   webhook stack's mount paths.
+
    ```sh
-   REPO=/tmp/nas-sites
-   git clone --depth 1 https://github.com/den-frie-vilje/nas-sites.git "$REPO"
-   sudo cp "$REPO/shared/webhook/compose.yml" /volume1/docker/webhook/compose.yml
+   # 1) Persistent clone for ongoing self-update.
+   sudo git clone --depth 1 \
+     https://github.com/den-frie-vilje/nas-sites.git \
+     /volume1/docker/webhook/nas-sites
+   sudo chown -R deploy:users /volume1/docker/webhook/nas-sites
+
+   # 2) Initial copy into the webhook stack's mount paths. After
+   #    this, edits to nas-sites' shared/webhook/{hooks.yaml,
+   #    scripts/deploy.sh} propagate via deploy.sh's self-update
+   #    block — no manual cp per change.
+   SRC=/volume1/docker/webhook/nas-sites/shared/webhook
+   sudo cp "$SRC/compose.yml" /volume1/docker/webhook/compose.yml
    sudo mkdir -p /volume1/docker/webhook/webhook/scripts
-   sudo cp "$REPO/shared/webhook/hooks.yaml" /volume1/docker/webhook/webhook/hooks.yaml
-   sudo cp "$REPO/shared/webhook/scripts/deploy.sh" /volume1/docker/webhook/webhook/scripts/deploy.sh
+   sudo cp "$SRC/hooks.yaml" /volume1/docker/webhook/webhook/hooks.yaml
+   sudo cp "$SRC/scripts/deploy.sh" /volume1/docker/webhook/webhook/scripts/deploy.sh
    sudo chmod +x /volume1/docker/webhook/webhook/scripts/deploy.sh
-   sudo cp "$REPO/shared/webhook/webhook.env.example" /volume1/docker/webhook/webhook.env
+   sudo cp "$SRC/webhook.env.example" /volume1/docker/webhook/webhook.env
    sudo chmod 600 /volume1/docker/webhook/webhook.env
    # Edit webhook.env with HMAC secrets per site (see webhook.env.example
    # in this repo for the naming convention).
-   rm -rf "$REPO"
+
    cd /volume1/docker/webhook
    sudo docker compose up -d
    ```
@@ -55,11 +74,20 @@ inbound services beyond :443.
 
 ## Per-site onboarding after the first
 
-- Append two hook entries to `/volume1/docker/webhook/webhook/hooks.yaml`
-  (template in this repo's `shared/webhook/hooks.yaml`)
+- Append two hook entries to `shared/webhook/hooks.yaml` IN THIS
+  REPO (not on the NAS). Commit + push. The NEXT deploy fire on
+  ANY existing site git-pulls the nas-sites clone and propagates
+  the new entries to the webhook's hooks.yaml. Webhook
+  `-hotreload` picks them up within a second — no restart needed.
 - Append two HMAC secrets (+ optional CF vars) to
-  `/volume1/docker/webhook/webhook.env` under the site's
-  `<DOMAIN_SAFE>_…` prefix
+  `/volume1/docker/webhook/webhook.env` ON THE NAS (these are
+  per-NAS secrets, NOT committed) under the site's
+  `<DOMAIN_SAFE>_…` prefix. Then on the NAS:
+  ```sh
+  cd /volume1/docker/webhook && sudo docker compose down && sudo docker compose up -d
+  ```
+  (env files are baked at container creation, so a `restart`
+  doesn't pick up new secrets — needs full down + up).
 - Create `/volume1/docker/<DOMAIN>/{repo,staging,production}/`
   directories
 - Clone the site repo into `/volume1/docker/<DOMAIN>/repo`
@@ -68,7 +96,7 @@ inbound services beyond :443.
 - Create the staging + production DSM vhosts
 - Push any commit to the site's `staging` branch — deploy fires
 
-No NAS restart needed for new sites. The shared webhook is
-hot-reloading, and the site's first `docker compose up` is
-triggered by the first CI deploy fire + the chicken-and-egg
-manual bring-up covered in the first site's DEPLOY.md §8.
+The shared webhook is hot-reloading, and the site's first
+`docker compose up` is triggered by the first CI deploy fire +
+the chicken-and-egg manual bring-up covered in the first site's
+DEPLOY.md §8.

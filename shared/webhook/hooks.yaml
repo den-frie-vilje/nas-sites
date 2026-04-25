@@ -22,10 +22,23 @@
 # Without it, CI thinks every deploy succeeded just because
 # the HMAC verified.
 #
+# include-command-output-in-response-on-error MUST stay false
+# on each hook — on a deploy failure we DON'T want to leak
+# script stdout/stderr (paths, env-var names, internal
+# hostnames, image digests, anything else the script printed
+# before crashing) into the HTTP response. The CI run shows
+# "webhook HTTP 500" with no body; failure detail lives in
+# `docker logs nas-deploy-webhook` on the NAS, which only the
+# operator can read. Trades a debugging-convenience step for
+# a meaningful reduction in attack surface against an attacker
+# with the HMAC secret (or future bypasses).
+#
 # `-hotreload` on the webhook command means edits to this file
 # are picked up live. `deploy.sh` auto-syncs this file from the
-# per-site repo clone on every fire, so adding a hook is a
-# one-commit operation after the first site's bootstrap.
+# NAS-side nas-sites clone on every fire (see deploy.sh's
+# self-update block), so per-site hook entries are added by
+# committing to nas-sites/shared/webhook/hooks.yaml + pushing —
+# the NEXT fire on any existing site picks them up.
 #
 # =============================================================
 # Template for a new site (copy, replace <domain> and
@@ -38,7 +51,7 @@
 #     - { source: string, name: <domain> }
 #     - { source: string, name: staging }
 #   include-command-output-in-response: true
-#   include-command-output-in-response-on-error: true
+#   include-command-output-in-response-on-error: false
 #   trigger-rule:
 #     match:
 #       type: payload-hmac-sha256
@@ -63,7 +76,7 @@
     - source: string
       name: staging
   include-command-output-in-response: true
-  include-command-output-in-response-on-error: true
+  include-command-output-in-response-on-error: false
   trigger-rule:
     match:
       type: payload-hmac-sha256
@@ -81,7 +94,7 @@
     - source: string
       name: production
   include-command-output-in-response: true
-  include-command-output-in-response-on-error: true
+  include-command-output-in-response-on-error: false
   trigger-rule:
     match:
       type: payload-hmac-sha256

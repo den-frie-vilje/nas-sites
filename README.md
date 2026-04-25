@@ -28,8 +28,10 @@ tooling in the reusable layer.
   docker-cli + git + curl)
 - **`hooks.yaml`** — HMAC-verified endpoint template; per-site entries
   get appended
-- **`scripts/deploy.sh`** — self-updating deploy script invoked by each
-  webhook fire
+- **`scripts/deploy.sh`** — deploy script invoked by each webhook fire.
+  Self-updates from a NAS-side clone of this repo at
+  `/volume1/docker/webhook/nas-sites/`, so commits to `shared/webhook/**`
+  propagate on the next deploy fire without a manual `sudo cp`
 - **`compose.yml`** — compose file for the webhook stack
 - **`webhook.env.example`** — per-site HMAC + CF secrets shape
 
