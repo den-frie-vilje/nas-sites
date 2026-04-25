@@ -1,0 +1,53 @@
+# Weekly dependency updates, grouped per ecosystem.
+#
+# Strategy: minor + patch updates roll into one PR per ecosystem
+# per week. Major updates land as individual PRs so a single
+# breaking change can't park the whole batch.
+#
+# Schedule fires Monday early morning Copenhagen time so PRs
+# are waiting at the start of the week.
+
+version: 2
+
+updates:
+  # Reusable workflow actions (checkout, login-action, buildx,
+  # build-push-action, metadata-action). These get pulled into
+  # every consuming repo's CI, so keeping them current matters.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Copenhagen"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      github-actions-minor-patch:
+        patterns: ["*"]
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Webhook container base image (adnanh/webhook on alpine).
+  # Security patches here matter — this container terminates
+  # external HMAC-authenticated requests on the NAS edge.
+  - package-ecosystem: "docker"
+    directory: "/shared/webhook"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Copenhagen"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+    groups:
+      docker-minor-patch:
+        patterns: ["*"]
+        update-types:
+          - "minor"
+          - "patch"
