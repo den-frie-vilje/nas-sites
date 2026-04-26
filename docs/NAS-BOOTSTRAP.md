@@ -100,3 +100,51 @@ The shared webhook is hot-reloading, and the site's first
 `docker compose up` is triggered by the first CI deploy fire +
 the chicken-and-egg manual bring-up covered in the first site's
 DEPLOY.md §8.
+
+## Gotchas
+
+### `sudo git` on the nas-sites clone fails with "dubious ownership"
+
+The bootstrap above clones `nas-sites` to
+`/volume1/docker/webhook/nas-sites` and chowns the result to
+`deploy:users`. When you later run a `sudo git ...` command
+against that clone from the host shell, Git 2.35+ refuses with
+`fatal: detected dubious ownership in repository at '...'`
+because `sudo`-as-root is operating on a clone owned by a
+different user. Two workarounds:
+
+```sh
+# Option A: trust this clone for root's git globally (one-time).
+sudo git config --global --add safe.directory \
+  /volume1/docker/webhook/nas-sites
+
+# Option B: run as the clone owner instead of sudo.
+sudo -u deploy git -C /volume1/docker/webhook/nas-sites status
+```
+
+Either works. The webhook container itself is unaffected: its
+`deploy.sh` does `git config --global --add safe.directory '*'`
+at startup and runs every git command from inside the
+container, so its self-update path is never blocked by this.
+
+### Pre-extraction layouts (existing NASes bootstrapped before
+2026-04)
+
+A NAS bootstrapped before the `nas-sites` extraction (PR #4 in
+[skovbyesexologi.com](https://github.com/den-frie-vilje/skovbyesexologi.com/pull/4))
+has a slightly different layout: `compose.yml` lives inside
+`/volume1/docker/webhook/webhook/` (not at the top level
+`/volume1/docker/webhook/compose.yml` shown above), and the
+self-update used to read from each consumer site's repo
+(broken since extraction; fixed by the deploy.sh self-update
+update in
+[`ba1d97a`](https://github.com/den-frie-vilje/nas-sites/commit/ba1d97a)).
+
+Existing NASes don't need to migrate — both layouts function
+identically for ongoing operations. The new layout above is
+the target for fresh bootstraps and for future site templates.
+If you want to align an existing NAS, the migration is roughly:
+move `compose.yml` to the top level, remove the leftover
+`Dockerfile` from `/volume1/docker/webhook/webhook/` (it was
+used pre-extraction when the image built locally; the runtime
+now pulls from GHCR), then `docker compose down && up -d`.
