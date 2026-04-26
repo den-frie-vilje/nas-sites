@@ -137,36 +137,46 @@ cd "$STACK_DIR"
 # the original, manual workflow_dispatch firing while a push
 # is in flight) would otherwise race over docker-compose state.
 #
-# BusyBox flock (in util-linux on Alpine) supports `-w SEC`
-# for wait timeout, `-x` (exclusive, default), `-n` (non-blocking),
-# `-u` (unlock). Avoiding any GNU-only extensions.
+# BusyBox flock (Alpine util-linux build inside the webhook
+# container) supports `-n` (non-blocking) and `-u` (unlock)
+# but NOT `-w SEC` (which is a CONFIG-dependent feature in
+# BusyBox; the build shipped here doesn't include it — verified
+# empirically when `-w` made flock print its short usage and
+# return non-zero). So we poll with `flock -n` in a sleep
+# loop instead.
 #
-# Stale-lock semantics: flock(2) holds against the open fd, NOT
-# against the filename. The kernel auto-releases on any process
-# exit — clean exit, crash, SIGKILL, OOM kill, container restart,
-# kernel panic, reboot. So an orphan /tmp/deploy-*.lock FILE on
-# disk is harmless: the next flock attempt finds no live holder
-# and acquires immediately. There is no scenario where a stale
-# lock blocks a deploy.
+# Stale-lock semantics: flock(2) holds against the open fd,
+# NOT against the filename. The kernel auto-releases on any
+# process exit — clean exit, crash, SIGKILL, OOM kill,
+# container restart, kernel panic, reboot. An orphan
+# /tmp/deploy-*.lock file with no live holder is just a file;
+# the next flock -n attempt acquires immediately. There is no
+# scenario where a stale lock blocks a deploy.
 #
-# The trap below removes the lock file on graceful exit purely
-# for /tmp hygiene — correctness does NOT depend on it firing
+# The trap removes the lock file on graceful exit purely for
+# /tmp hygiene — correctness does NOT depend on it firing
 # (it doesn't fire on SIGKILL, but that's fine per the above).
 #
-# Placement: AFTER the self-update block on purpose. The re-exec
-# there closes fd 200 and momentarily releases the lock,
-# letting a queued sibling steal it. Self-update racing is
-# fine: both runs cp the same source bytes, last-writer wins,
-# both then exec the new code and both arrive here for the lock.
+# Placement: AFTER the self-update block on purpose. The
+# re-exec there closes fd 200 and momentarily releases the
+# lock, letting a queued sibling steal it. Self-update racing
+# is fine: both runs cp the same source bytes, last-writer
+# wins, both then exec the new code and both arrive here for
+# the lock.
 #
-# 600s timeout: if the first deploy is genuinely wedged we
-# bail with a clear message rather than queueing forever.
+# 600 attempts × 1s = 10min max wait: if the first deploy is
+# genuinely wedged we bail rather than queueing forever.
 LOCK_FILE="/tmp/deploy-${PROJECT}.lock"
 exec 200>"$LOCK_FILE"
-if ! flock -w 600 200; then
-    echo "[$(date -Iseconds)] [$PROJECT] could not acquire deploy lock within 10min — bailing"
-    exit 1
-fi
+LOCK_ATTEMPTS=0
+until flock -n 200; do
+    LOCK_ATTEMPTS=$((LOCK_ATTEMPTS + 1))
+    if [ "$LOCK_ATTEMPTS" -ge 600 ]; then
+        echo "[$(date -Iseconds)] [$PROJECT] could not acquire deploy lock within 10min — bailing"
+        exit 1
+    fi
+    sleep 1
+done
 trap 'rm -f "$LOCK_FILE"' EXIT
 
 COMPOSE_ARGS=(-p "$PROJECT" -f "$COMPOSE_FILE")
