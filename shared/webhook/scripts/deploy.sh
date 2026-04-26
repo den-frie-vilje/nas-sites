@@ -137,9 +137,23 @@ COMPOSE_ARGS=(-p "$PROJECT" -f "$COMPOSE_FILE")
 
 docker compose "${COMPOSE_ARGS[@]}" pull site
 
-# First pass: apply any compose/env/volume changes across all
-# services (idempotent — unchanged services are untouched).
-docker compose "${COMPOSE_ARGS[@]}" up -d
+# First pass: apply any site-only compose/env/volume changes.
+# `--no-deps site` is critical: without it, compose v2 cascades
+# through `depends_on` and recreates Caddy (+ sveltia-auth on
+# staging) every time the site image digest changes. Caddy
+# being recreated mid-deploy drops the live CI→webhook
+# connection that's awaiting our response, which curl
+# (--retry 3 --retry-connrefused in build-and-notify.yml) then
+# retries — firing a SECOND hook in parallel that races with
+# this script's own --wait force-recreate below, marking the
+# deploy as failed in CI even though the site lands fine.
+#
+# Compose-level changes that DO need Caddy/sveltia-auth
+# recreation (new service, network rename, volume topology
+# change) are rare and intentional — handle those with a
+# manual `docker compose up -d` on the NAS, not via the
+# routine deploy fire.
+docker compose "${COMPOSE_ARGS[@]}" up -d --no-deps site
 
 # Second pass: force-recreate the site container specifically.
 # Docker Compose's default up skips recreation when the image
