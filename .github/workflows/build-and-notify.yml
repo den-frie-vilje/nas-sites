@@ -175,27 +175,31 @@ jobs:
           SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $2}')"
           echo "POSTing to $URL"
 
-          # Smart retry: retry only on connection-level errors
-          # (curl exit non-zero), NEVER on HTTP 5xx.
+          # Smart retry. Retry on:
+          #   - curl exit non-zero (TCP drop, DNS fail, etc.)
+          #   - HTTP 502/503/504 (upstream gateway errors —
+          #     typically the DSM Web Station -> per-site Caddy
+          #     proxy seeing Caddy mid-recreate during the deploy.
+          #     The deploy.sh probably succeeded server-side; the
+          #     retry just confirms with a fresh request).
           #
-          # Why: webhook 5xx means deploy.sh genuinely failed,
-          # and with C3 redaction in shared/webhook/hooks.yaml
-          # the response body is also stripped — retrying just
-          # re-runs the same script with the same outcome and
-          # spams the logs. Curl's default --retry would retry
-          # on 5xx, which is wrong here.
+          # Do NOT retry on:
+          #   - HTTP 200 (success)
+          #   - HTTP 500 (with C3 redaction in hooks.yaml, this
+          #     means deploy.sh genuinely failed — re-running just
+          #     re-hits the same failure and spams logs)
+          #   - HTTP 4xx (client error: HMAC mismatch, bad payload —
+          #     not transient, fail fast)
           #
-          # Why retry on connection errors at all: the webhook
-          # path goes through each site's Caddy, which compose
-          # may cascade-recreate when site's image digest
-          # changes — that briefly drops the in-flight curl
-          # connection mid-deploy. We need ONE retry path for
-          # this specific case.
+          # 180s delay between attempts: longer than the typical
+          # NAS-side deploy (30-90s), so any retry fires AFTER
+          # the original deploy.sh finished. Combined with the
+          # per-site flock in deploy.sh, the second attempt is
+          # idempotent — it re-pulls the (already-current) image,
+          # recreates containers, and returns 200.
           #
-          # 180s delay: longer than the typical NAS-side deploy
-          # (30-90s), so a retry fires AFTER the first deploy.sh
-          # has finished. Combined with the per-site flock in
-          # deploy.sh that's belt-and-braces against any race.
+          # Body suppressed for 5xx because DSM's gateway error
+          # response is a multi-KB HTML page, not useful in CI logs.
           HTTP_CODE=
           for attempt in 1 2 3; do
             curl_exit=0
@@ -206,13 +210,20 @@ jobs:
                 --data "$BODY" \
                 --max-time 300) || curl_exit=$?
 
-            if [ "$curl_exit" -eq 0 ]; then
-              # Got a response (any HTTP code). Stop retrying;
-              # the HTTP code below decides success/failure.
-              break
+            if [ "$curl_exit" -ne 0 ]; then
+              echo "attempt $attempt: connection-level error (curl exit $curl_exit)"
+            else
+              case "$HTTP_CODE" in
+                502|503|504)
+                  echo "attempt $attempt: HTTP $HTTP_CODE (upstream gateway — deploy likely landed; retrying to confirm)"
+                  ;;
+                *)
+                  # 200 success, or 4xx/500 — final outcome.
+                  break
+                  ;;
+              esac
             fi
 
-            echo "attempt $attempt: connection-level error (curl exit $curl_exit)"
             if [ "$attempt" -lt 3 ]; then
               echo "retrying in 180s..."
               sleep 180
@@ -220,7 +231,14 @@ jobs:
           done
 
           echo "webhook HTTP ${HTTP_CODE:-<no response>}"
-          cat /tmp/resp.txt || true
+          case "${HTTP_CODE:-}" in
+            5*)
+              echo "(body suppressed — gateway/server error pages can be multi-KB HTML)"
+              ;;
+            *)
+              cat /tmp/resp.txt 2>/dev/null || true
+              ;;
+          esac
           [ "${HTTP_CODE:-}" = "200" ] || exit 1
 
       - name: Smoke check the live URL
