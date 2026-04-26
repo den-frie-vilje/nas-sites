@@ -28,10 +28,12 @@
 # hostnames, image digests, anything else the script printed
 # before crashing) into the HTTP response. The CI run shows
 # "webhook HTTP 500" with no body; failure detail lives in
-# `docker logs nas-deploy-webhook` on the NAS, which only the
-# operator can read. Trades a debugging-convenience step for
-# a meaningful reduction in attack surface against an attacker
-# with the HMAC secret (or future bypasses).
+# the webhook container's logs on the NAS, which only the
+# operator can read:
+#   cd /volume1/docker/webhook && sudo docker compose logs webhook
+# Trades a debugging-convenience step for a meaningful
+# reduction in attack surface against an attacker with the
+# HMAC secret (or future bypasses).
 #
 # `-hotreload` on the webhook command means edits to this file
 # are picked up live. `deploy.sh` auto-syncs this file from the
