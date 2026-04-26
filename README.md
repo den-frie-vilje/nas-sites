@@ -166,6 +166,52 @@ credential from disk on the NAS.
 - [ ] Document the tradeoff (undocumented API surface, needs sudo or
   root install) in NAS bootstrap docs
 
+### 🚀 Stage 5b — Webhook on dedicated hostname (TODO)
+
+Move the deploy webhook off each site's per-site Caddy and onto a single
+shared hostname `hooks.server.denfrievilje.dk`, routed directly from DSM
+Web Station to the webhook container on the `nas-deploy` network.
+
+**Why**: today the webhook URL is per-site
+(`<domain-dashed>.{stage,prod}.denfrievilje.dk/hooks/deploy/<domain>/<env>`),
+which routes traffic through that site's Caddy container. compose v2
+cascade-recreates per-site Caddy when the site's image digest changes,
+which drops the in-flight CI→webhook curl connection — DSM returns 502
+to curl, the build-and-notify smart retry waits 180s and tries again,
+and the deploy ends up taking ~5 min instead of ~1 min via a redundant
+second deploy.sh run. Moving the webhook off the per-site Caddy path
+eliminates this entirely.
+
+- [ ] Add A record `hooks.server.denfrievilje.dk` → NAS public IP
+- [ ] Add to acme.sh cert renewal (single-host cert or wildcard
+  `*.server.denfrievilje.dk` if other server-scoped services follow)
+- [ ] Create DSM Web Station vhost for `hooks.server.denfrievilje.dk`
+  proxying to the `webhook:9000` container on the `nas-deploy`
+  shared docker network
+- [ ] Update consumer sites' `deploy-{staging,production}.yml` to use
+  `https://hooks.server.denfrievilje.dk/hooks/deploy/<domain>/<env>`
+  as the `webhook-url:` input
+- [ ] Drop the `/hooks/*` route from each site's
+  `Caddyfile.{staging,production}` (no longer needed there)
+- [ ] Verify: a staging deploy completes single-shot in <2 min with no
+  smart-retry firing
+- [ ] Once verified across all sites: remove the 502/503/504 retry
+  branch from `build-and-notify.yml`'s smart retry loop (keep the
+  connection-error retry as general resilience)
+
+**Wins** over the current smart-retry-only approach:
+
+- Single-shot deploys (~1 min) replace today's typical two-shot (~5 min)
+- Per-site Caddy recreates during deploys don't affect the webhook path
+- One less moving part for new-site onboarding (per-site Caddyfile
+  doesn't need a `/hooks/*` block)
+- Cleaner separation of concerns — webhook is shared infrastructure,
+  not per-site
+
+This is a targeted subset of Stage 6 (full Traefik replacement) — does
+the connectivity-isolation win for the webhook without committing to
+replace the entire DSM-Web-Station + per-site-Caddy pattern.
+
 ### 🌉 Stage 6 — Traefik front-door alternative (TODO, only when needed)
 
 If a NAS ever becomes docker-host-only (no DSM Web Station tenancy to
