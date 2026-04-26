@@ -174,16 +174,54 @@ jobs:
             '{image_tag: $tag, commit_sha: $sha, run_url: $run}')
           SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $2}')"
           echo "POSTing to $URL"
-          HTTP_CODE=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' \
-            -X POST "$URL" \
-            -H "Content-Type: application/json" \
-            -H "X-Hub-Signature-256: $SIG" \
-            --data "$BODY" \
-            --max-time 180 \
-            --retry 3 --retry-delay 5 --retry-connrefused)
-          echo "webhook HTTP $HTTP_CODE"
+
+          # Smart retry: retry only on connection-level errors
+          # (curl exit non-zero), NEVER on HTTP 5xx.
+          #
+          # Why: webhook 5xx means deploy.sh genuinely failed,
+          # and with C3 redaction in shared/webhook/hooks.yaml
+          # the response body is also stripped — retrying just
+          # re-runs the same script with the same outcome and
+          # spams the logs. Curl's default --retry would retry
+          # on 5xx, which is wrong here.
+          #
+          # Why retry on connection errors at all: the webhook
+          # path goes through each site's Caddy, which compose
+          # may cascade-recreate when site's image digest
+          # changes — that briefly drops the in-flight curl
+          # connection mid-deploy. We need ONE retry path for
+          # this specific case.
+          #
+          # 180s delay: longer than the typical NAS-side deploy
+          # (30-90s), so a retry fires AFTER the first deploy.sh
+          # has finished. Combined with the per-site flock in
+          # deploy.sh that's belt-and-braces against any race.
+          HTTP_CODE=
+          for attempt in 1 2 3; do
+            curl_exit=0
+            HTTP_CODE=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' \
+                -X POST "$URL" \
+                -H "Content-Type: application/json" \
+                -H "X-Hub-Signature-256: $SIG" \
+                --data "$BODY" \
+                --max-time 300) || curl_exit=$?
+
+            if [ "$curl_exit" -eq 0 ]; then
+              # Got a response (any HTTP code). Stop retrying;
+              # the HTTP code below decides success/failure.
+              break
+            fi
+
+            echo "attempt $attempt: connection-level error (curl exit $curl_exit)"
+            if [ "$attempt" -lt 3 ]; then
+              echo "retrying in 180s..."
+              sleep 180
+            fi
+          done
+
+          echo "webhook HTTP ${HTTP_CODE:-<no response>}"
           cat /tmp/resp.txt || true
-          [ "$HTTP_CODE" = "200" ] || exit 1
+          [ "${HTTP_CODE:-}" = "200" ] || exit 1
 
       - name: Smoke check the live URL
         if: inputs.smoke-check-url != ''
