@@ -113,7 +113,16 @@ if [ -d "$NAS_SITES/.git" ]; then
     NEW_HOOKS="$NAS_SITES/shared/webhook/hooks.yaml"
     if [ -f "$NEW_HOOKS" ] && ! cmp -s "$NEW_HOOKS" /etc/webhook/hooks.yaml; then
         echo "[$(date -Iseconds)] hooks.yaml updated in nas-sites; copying"
-        cp "$NEW_HOOKS" /etc/webhook/hooks.yaml
+        # Write through the bind mount instead of `cp`. /etc/webhook/hooks.yaml
+        # is a SINGLE-FILE bind from compose.yml's
+        # `./webhook/hooks.yaml:/etc/webhook/hooks.yaml`. BusyBox cp fails
+        # against single-file binds with "File exists" because its
+        # create-and-truncate path conflicts with the kernel-level bind.
+        # `cat > dst` uses open(O_WRONLY|O_CREAT|O_TRUNC) which truncates
+        # the existing inode in place — works through the bind cleanly.
+        # (deploy.sh self-replace above uses cp because /scripts is a
+        # directory bind, where cp works normally.)
+        cat "$NEW_HOOKS" > /etc/webhook/hooks.yaml
     fi
 else
     # Loud failure: surfaces a misbootstrapped NAS instead of
