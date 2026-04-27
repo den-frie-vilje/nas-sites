@@ -382,31 +382,45 @@ deploy_site() {
     fi
 
     # ─── Detect change ────────────────────────────────────────────────────
-    # Pull, then compare image IDs before/after. If unchanged AND a
-    # container is currently running, this fire is a no-op. This is what
-    # makes the timer-driven model cheap when nothing has changed.
+    # Pull the latest images, then compare what's RUNNING (the live
+    # container's image ID, per `docker inspect`) to what the compose
+    # file resolves to (the post-pull local image ID for the site
+    # service). Mismatch ⇒ deploy. If they match AND a container is
+    # actually running, this fire is a no-op.
+    #
+    # Why not "compare image IDs before vs after pull": that only catches
+    # "did this fire bring in new bytes." It misses the common case of
+    # a previous fire pulling the new image but failing to deploy it
+    # (e.g. cosign verify failed before, then started passing) — the
+    # local cache is up to date, but the running container is stale.
+    # Comparing running-vs-target is the correct invariant.
     local compose_args=(-p "$project" -f "$compose_file")
     [ -f "$env_file" ] && compose_args+=(--env-file "$env_file")
-
-    local before after running
-    before=$(compose_image_ids "${compose_args[@]}")
 
     if ! "${DOCKER_COMPOSE[@]}" "${compose_args[@]}" pull --quiet 2>&1 | sed "s/^/[$project]   pull: /"; then
         err "[$project] docker compose pull failed"
         return 1
     fi
 
-    after=$(compose_image_ids "${compose_args[@]}")
-    running=$(compose_running_count "${compose_args[@]}")
+    local target_id running_container running_id=""
+    target_id=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" images --quiet "$SITE_SERVICE" 2>/dev/null | head -1)
+    running_container=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" ps --quiet "$SITE_SERVICE" 2>/dev/null | head -1)
+    if [ -n "$running_container" ]; then
+        running_id=$(docker inspect --format '{{.Image}}' "$running_container" 2>/dev/null || echo "")
+    fi
 
-    if [ "$before" = "$after" ] && [ "$running" -gt 0 ]; then
-        log "[$project]   no change — current images already running"
+    if [ -n "$running_id" ] && [ "$running_id" = "$target_id" ]; then
+        log "[$project]   no change — site container already on target image (${target_id:0:19}…)"
         return 0
     fi
 
-    # ─── Deploy ───────────────────────────────────────────────────────────
-    log "[$project]   deploying (images changed or stack not running)"
+    if [ -z "$running_container" ]; then
+        log "[$project]   deploying — no running site container"
+    else
+        log "[$project]   deploying — running ${running_id:0:19}… → target ${target_id:0:19}…"
+    fi
 
+    # ─── Deploy ───────────────────────────────────────────────────────────
     # Two passes:
     #   1. up -d  → applies any compose/env/network/volume changes across
     #               the whole stack idempotently.
