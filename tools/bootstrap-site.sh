@@ -4,12 +4,20 @@
 #
 # What this script does, with confirmations:
 #   1. Prompt for DOMAIN, ENV_NAME, REPO, BRANCH, COMPOSE_FILE_REL
-#   2. Create /volume1/docker/<domain>/{repo,<env>}/ owned by deploy:users
-#   3. git clone the site repo at the chosen branch (if not already cloned)
-#   4. Create the per-stack <env>.env at root:deploy 0640 and open $EDITOR on it
-#   5. Create the per-(site, env) sites.d/<domain>.<env>.env from the template,
-#      open $EDITOR on it for secret values
+#   2. Create /volume1/docker/<domain>/{repo,<env>}/ — relies on Synology
+#      ACL inheritance from /volume1/docker (which grants the deploy user
+#      access). Does NOT chown -R: that fights ACL inheritance.
+#   3. git clone the site repo as the deploy user (so the clone is
+#      already deploy-owned at the Unix layer, the agent's later
+#      `git fetch` works without permission gymnastics)
+#   4. Create the per-stack <env>.env at root:deploy 0640 and open $EDITOR
+#   5. Create the per-(site, env) sites.d/<domain>.<env>.env from the
+#      template (root:deploy 0640), pre-fill the values, open $EDITOR
 #   6. Smoke-test: run the deploy agent with a one-site filter
+#
+# Idempotent: re-running after a partial failure (e.g. previous run hit
+# the `chown root:deploy` failure before the deploy group existed)
+# re-applies ownership and permissions even when the file already exists.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,6 +33,9 @@ EDITOR="${EDITOR:-vi}"
 require_dsm
 require_root
 require_tools git sed mkdir cp chmod chown
+# Hard-fail if deploy doesn't have the ACL grant yet — better here than
+# halfway through the script with a chown failure.
+require_deploy_can_write /volume1/docker
 
 heading "Bootstrap a (site, env) for the pull-only agent"
 
@@ -47,32 +58,46 @@ ENV_FILE="$STACK_DIR/$ENV_NAME.env"
 SITES_D_FILE="$SITES_D/$DOMAIN.$ENV_NAME.env"
 
 heading "Plan"
-plan "create dir $SITE_REPO_DIR (deploy:users 0755)"
-plan "git clone https://github.com/$REPO at branch $BRANCH → $SITE_REPO_DIR (skip if exists)"
-plan "create dir $STACK_DIR (deploy:users 0755)"
+plan "create dir $SITE_REPO_DIR + $STACK_DIR (deploy via ACL inheritance)"
+plan "git clone https://github.com/$REPO at branch $BRANCH → $SITE_REPO_DIR (as deploy)"
 plan "create empty $ENV_FILE (root:deploy 0640) and open in \$EDITOR"
 plan "copy $SITE_TEMPLATE → $SITES_D_FILE (root:deploy 0640) and open in \$EDITOR"
 plan "smoke-test: run agent with filter ($DOMAIN $ENV_NAME)"
 
 confirm "Proceed?" || { echo "Aborted by operator."; exit 0; }
 
-# ─── 1. dirs ───────────────────────────────────────────────────────────────
+# ─── 1. directories ────────────────────────────────────────────────────────
 heading "1/5 directories"
-run mkdir -p "$SITE_REPO_DIR" "$STACK_DIR"
+# Create as deploy so ACL inheritance + Unix ownership both line up. If the
+# parent doesn't yet exist, deploy can mkdir it because the ACL grants
+# write on /volume1/docker (verified by require_deploy_can_write above).
+run sudo -u deploy mkdir -p "$SITE_REPO_DIR" "$STACK_DIR"
 
 # ─── 2. site repo clone ────────────────────────────────────────────────────
 heading "2/5 site repo clone"
 if [ -d "$SITE_REPO_DIR/.git" ]; then
     echo "$SITE_REPO_DIR already a git clone; skipping clone."
+    # Make sure deploy still owns the existing clone — operator may have
+    # cloned by hand as root in an earlier session.
+    if ! sudo -u deploy test -w "$SITE_REPO_DIR"; then
+        echo "WARN: deploy cannot write to $SITE_REPO_DIR — likely cloned by root."
+        echo "      The agent's git fetch will fail. Re-clone or chown to fix:"
+        echo "        sudo rm -rf $SITE_REPO_DIR && re-run this script"
+    fi
 else
-    run git clone --depth 1 -b "$BRANCH" "https://github.com/$REPO.git" "$SITE_REPO_DIR"
+    run sudo -u deploy git clone --depth 1 -b "$BRANCH" \
+        "https://github.com/$REPO.git" "$SITE_REPO_DIR"
 fi
-run chown -R deploy:users "/volume1/docker/$DOMAIN"
 
 # ─── 3. per-stack env file ────────────────────────────────────────────────
 heading "3/5 per-stack env file ($ENV_FILE)"
+# Always re-apply ownership + perms, even when file exists. This makes the
+# script self-healing if a previous run failed at chown (e.g. before the
+# deploy group existed).
 if [ -f "$ENV_FILE" ]; then
-    echo "$ENV_FILE already exists; leaving as-is. Re-edit by hand if needed."
+    echo "$ENV_FILE already exists; preserving content + re-applying ownership."
+    run chmod 0640 "$ENV_FILE"
+    run chown root:deploy "$ENV_FILE"
 else
     create_empty_file 0640 root deploy "$ENV_FILE"
 fi
@@ -88,7 +113,9 @@ if [ ! -f "$SITE_TEMPLATE" ]; then
 fi
 mkdir -p "$SITES_D"
 if [ -f "$SITES_D_FILE" ]; then
-    echo "$SITES_D_FILE already exists; leaving as-is. Re-edit by hand if needed."
+    echo "$SITES_D_FILE already exists; preserving content + re-applying ownership."
+    run chmod 0640 "$SITES_D_FILE"
+    run chown root:deploy "$SITES_D_FILE"
 else
     install_file 0640 root deploy "$SITE_TEMPLATE" "$SITES_D_FILE"
     # Pre-populate the values we asked for so the operator only has to fill
