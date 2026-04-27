@@ -1,0 +1,240 @@
+# Reusable workflow: build a site image, push to GHCR, sign with Sigstore
+# Cosign keyless. The NAS-side pull-only deploy agent verifies the resulting
+# signature before deploying — see docs/PULL-DEPLOY-MODEL.md.
+#
+# The keyless cosign signature ties this workflow's identity (path + branch
+# ref) into the certificate. The agent's verification regex pins:
+#   ^https://github\.com/den-frie-vilje/[^/]+/\.github/workflows/build-and-sign\.yml@refs/heads/(main|staging)$
+# so an attacker who cannot run this workflow on `main` or `staging` of a
+# den-frie-vilje repo cannot produce a signature the NAS will accept.
+#
+# Invoked from each site's `deploy-<env>.yml` via:
+#   uses: den-frie-vilje/nas-sites/.github/workflows/build-and-sign.yml@main
+
+name: Build and sign (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'staging or production — used for env-scoped secrets/approvals + image tag prefix.'
+        required: true
+        type: string
+      dockerfile:
+        description: 'Path to the Dockerfile in the caller repo. Typically `deploy/Dockerfile`.'
+        required: false
+        type: string
+        default: deploy/Dockerfile
+      build-context:
+        description: 'Docker build context path (relative to caller repo root).'
+        required: false
+        type: string
+        default: .
+      build-args:
+        description: 'Newline-separated KEY=VALUE build args passed to docker build. Caller typically sets PUBLIC_GIT_SHA + PUBLIC_BUILD_TIME here for build-time bundler substitution.'
+        required: false
+        type: string
+        default: ''
+      image-name:
+        description: 'GHCR image name, e.g. ghcr.io/den-frie-vilje/example-site. Tags are added by this workflow.'
+        required: true
+        type: string
+      platforms:
+        description: 'Comma-separated buildx platforms. Default linux/amd64 matches the Synology NAS (x86_64) and is faster than multi-arch.'
+        required: false
+        type: string
+        default: linux/amd64
+      verify-url:
+        description: 'Optional. URL to GET after the build, polled until the commit SHA (or verify-pattern) appears in the response, confirming the pull-only agent has deployed this build. Empty (default) skips verification.'
+        required: false
+        type: string
+        default: ''
+      verify-pattern:
+        description: 'Optional. String to look for in the verify-url response body. Defaults to the first 8 chars of the commit SHA, which works if the site bakes ${PUBLIC_GIT_SHA} into a meta tag or /_meta.json. Override for sites that expose the SHA differently.'
+        required: false
+        type: string
+        default: ''
+      verify-timeout-minutes:
+        description: 'Maximum minutes to poll verify-url before failing. Should exceed (agent poll interval + deploy duration + container startup). 20 min is comfortable for a 5-min agent.'
+        required: false
+        type: number
+        default: 20
+
+# One build per (caller-repo, environment) at a time. Two pushes to the
+# same env in quick succession serialize rather than racing the registry.
+concurrency:
+  group: build-and-sign-${{ github.repository }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45   # build (~5min) + sign (~1min) + verify polling (up to verify-timeout-minutes, default 20)
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      packages: write
+      # Required for Sigstore keyless signing — cosign exchanges this OIDC
+      # token for a short-lived Fulcio cert whose subject is this workflow's
+      # identity. No long-lived signing key exists.
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Full history so gitleaks can scan every accessible commit, not
+          # just HEAD. The threat model: a secret only has to ship once in
+          # any reachable commit to be a leak.
+          fetch-depth: 0
+
+      - name: gitleaks — scan source for committed secrets
+        # Pinned by manifest-index digest so dependabot bumps land via PR
+        # rather than silent base-image drift. Non-zero exit stops the
+        # workflow before push or signature, so a leaked secret can't
+        # enter the registry.
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/repo:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            detect --source /repo --no-banner --redact
+
+      - name: Generate image tags
+        id: tags
+        run: |
+          TS="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
+          SHA8="${GITHUB_SHA::8}"
+          IMMUTABLE_TAG="${{ inputs.environment }}-${TS}-${SHA8}"
+          MOVING_TAG="${{ inputs.environment }}-latest"
+          {
+            echo "immutable=${{ inputs.image-name }}:${IMMUTABLE_TAG}"
+            echo "moving=${{ inputs.image-name }}:${MOVING_TAG}"
+            echo "immutable-short=${IMMUTABLE_TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log into GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.build-context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.immutable }}
+            ${{ steps.tags.outputs.moving }}
+          build-args: ${{ inputs.build-args }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4
+
+      - name: Sign image (keyless, by digest)
+        # Sign by DIGEST, not by tag. Signing the immutable tag would
+        # leave the moving tag (`<env>-latest`) signed too because they
+        # resolve to the same digest at this moment, but signing the
+        # digest directly is unambiguous about what was signed: the
+        # exact bytes produced by this build, regardless of how many
+        # tags later point at them.
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign sign --yes "${{ inputs.image-name }}@${DIGEST}"
+
+      - name: Verify pull-only deploy reached the NAS
+        # Optional. Skipped if `verify-url` not set.
+        #
+        # The pull-only agent on the NAS fires every ~5 min and deploys
+        # only on digest change. So immediately after `cosign sign` the
+        # NAS does not yet have the new build — there's a 0–N min
+        # latency window. This step polls the live URL until the new
+        # commit's identifying string appears in the response, proving
+        # the deploy reached and replaced the running container.
+        #
+        # The site needs to expose its build identity somewhere in the
+        # response. Cheapest: bake `${PUBLIC_GIT_SHA}` (already a build
+        # arg) into a meta tag or /_meta.json — see PULL-DEPLOY-MODEL.md.
+        # For sites that don't, override `verify-pattern` to match
+        # whatever IS exposed.
+        if: inputs.verify-url != ''
+        env:
+          URL: ${{ inputs.verify-url }}
+          PATTERN: ${{ inputs.verify-pattern }}
+          TIMEOUT_MIN: ${{ inputs.verify-timeout-minutes }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+
+          # Default pattern: first 8 chars of the commit SHA, the same
+          # form most sites embed via PUBLIC_GIT_SHA build-arg.
+          pattern="${PATTERN:-${SHA:0:8}}"
+          deadline=$(($(date +%s) + TIMEOUT_MIN * 60))
+
+          echo "Polling $URL for '$pattern' (timeout ${TIMEOUT_MIN}m)"
+          echo "Agent fires every ~5 min — first sighting expected ~6 min in."
+
+          attempt=0
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+              attempt=$((attempt + 1))
+
+              # --max-time bounds individual requests so a hung TCP
+              # connection can't eat the whole budget. Cache-bust query
+              # arg defeats CDN/edge caching of stale content.
+              body=$(curl -fsSL --max-time 30 \
+                  -H 'Cache-Control: no-cache' \
+                  "${URL}?_cb=${attempt}" 2>/dev/null || true)
+
+              if printf '%s' "$body" | grep -qF -- "$pattern"; then
+                  echo "✓ attempt $attempt: found '$pattern' in response — deploy is live"
+                  exit 0
+              fi
+
+              echo "  attempt $attempt: not yet, sleeping 60s"
+              sleep 60
+          done
+
+          {
+              echo "::error title=Deploy not seen on NAS::Did not find '$pattern' at $URL within ${TIMEOUT_MIN}m."
+              echo ""
+              echo "Likely causes:"
+              echo "  - The pull-only agent isn't running on the NAS (check DSM Task Scheduler)"
+              echo "  - The agent's cosign verification failed for this image (check NAS logs:"
+              echo "    sudo tail -f /var/log/messages | grep nas-sites-deploy)"
+              echo "  - The site doesn't expose '$pattern' in its response (check verify-pattern input)"
+              echo "  - The verify-url returned non-2xx for the whole window"
+          } >&2
+          exit 1
+
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "## Built + signed"
+            echo ""
+            echo "- Environment: **${{ inputs.environment }}**"
+            echo "- Image tag (immutable): \`${{ steps.tags.outputs.immutable-short }}\`"
+            echo "- Image tag (moving): \`${{ inputs.environment }}-latest\`"
+            echo "- Digest: \`${DIGEST}\`"
+            echo "- Commit: \`${GITHUB_SHA::8}\`"
+            echo "- Platforms: \`${{ inputs.platforms }}\`"
+            echo ""
+            echo "The NAS pull-only deploy agent will verify this signature"
+            echo "and roll out the change on its next fire (typically within"
+            echo "5 minutes). See"
+            echo "[PULL-DEPLOY-MODEL.md](https://github.com/den-frie-vilje/nas-sites/blob/main/docs/PULL-DEPLOY-MODEL.md)."
+          } >> "$GITHUB_STEP_SUMMARY"
