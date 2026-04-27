@@ -186,13 +186,22 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          # `ts` is a Unix timestamp in seconds (Phase 4 / H1).
+          # Included in the HMAC-signed body so an attacker can't
+          # replay a captured request indefinitely — the NAS-side
+          # deploy.sh rejects anything with > 5 min skew. This is
+          # belt-and-braces: the HMAC alone already requires the
+          # shared secret, but a stable secret leaves a forever
+          # replay window without ts.
+          TS=$(date -u +%s)
           BODY=$(jq -cn \
             --arg tag "$IMAGE_TAG" \
             --arg sha "$COMMIT" \
             --arg run "$RUN_URL" \
-            '{image_tag: $tag, commit_sha: $sha, run_url: $run}')
+            --argjson ts "$TS" \
+            '{image_tag: $tag, commit_sha: $sha, run_url: $run, ts: $ts}')
           SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $2}')"
-          echo "POSTing to $URL"
+          echo "POSTing to $URL (ts=$TS)"
 
           # Smart retry. Retry on:
           #   - curl exit non-zero (TCP drop, DNS fail, etc.)

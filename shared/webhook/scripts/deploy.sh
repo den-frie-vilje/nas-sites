@@ -29,14 +29,53 @@ set -euo pipefail
 
 DOMAIN="${1:-}"
 ENV_NAME="${2:-}"
-[ -n "$DOMAIN" ]   || { echo "ERR: usage: $0 <domain> <env>"; exit 2; }
-[ -n "$ENV_NAME" ] || { echo "ERR: usage: $0 <domain> <env>"; exit 2; }
+TS="${3:-}"
+[ -n "$DOMAIN" ]   || { echo "ERR: usage: $0 <domain> <env> [<ts>]"; exit 2; }
+[ -n "$ENV_NAME" ] || { echo "ERR: usage: $0 <domain> <env> [<ts>]"; exit 2; }
 
 case "$ENV_NAME" in
     staging)    BRANCH=staging ;;
     production) BRANCH=main ;;
     *) echo "ERR: unknown env '$ENV_NAME'"; exit 2 ;;
 esac
+
+# Phase 4 / H1 — replay-attack hardening.
+#
+# CI sends a Unix timestamp `ts` in the request body, included
+# in the HMAC signature; hooks.yaml passes it through to us
+# as $3. Reject if the timestamp is more than 5 min off the
+# server's clock in either direction. With a stable HMAC
+# secret, an attacker who captures a valid signed POST could
+# otherwise replay it indefinitely; ts freshness narrows that
+# window to a 5-min replay buffer (and surfaces clock skew
+# loudly when it shows up).
+#
+# Optional during the rollout window: if $3 is empty, we're
+# running against an OLD hooks.yaml (from before this change
+# self-propagated). Warn but accept — by the next fire the
+# self-update will have shipped the new hooks.yaml and ts will
+# arrive. After we've seen one cycle of "ts received", future
+# work can make this strict.
+if [ -n "$TS" ]; then
+    # Bash regex — confirm $3 is a positive integer before
+    # arithmetic (a malformed value would crash `set -e` later).
+    if ! [[ "$TS" =~ ^[0-9]+$ ]]; then
+        echo "ERR: ts must be a positive integer Unix timestamp; got '$TS'"
+        exit 3
+    fi
+    NOW=$(date +%s)
+    SKEW=$((NOW - TS))
+    ABS_SKEW=${SKEW#-}
+    if [ "$ABS_SKEW" -gt 300 ]; then
+        echo "ERR: ts freshness check failed: skew ${SKEW}s > 300s"
+        echo "  request ts: $TS, server now: $NOW"
+        echo "  if this is a legitimate deploy, check NTP sync on the NAS"
+        echo "  (we accept ±5 min skew either direction)"
+        exit 3
+    fi
+else
+    echo "[$(date -Iseconds)] warn: no ts arg (older hooks.yaml propagating); skipping freshness check this fire"
+fi
 
 REPO="/volume1/docker/$DOMAIN/repo"
 STACK_DIR="/volume1/docker/$DOMAIN/$ENV_NAME"

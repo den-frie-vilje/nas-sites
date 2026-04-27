@@ -50,8 +50,14 @@
 #   execute-command: /scripts/deploy.sh
 #   command-working-directory: /scripts
 #   pass-arguments-to-command:
-#     - { source: string, name: <domain> }
-#     - { source: string, name: staging }
+#     - { source: string,  name: <domain> }
+#     - { source: string,  name: staging }
+#     - { source: payload, name: ts }   # Phase 4 / H1 — replay
+#                                       # protection. CI sends a
+#                                       # Unix timestamp in the
+#                                       # body; deploy.sh checks
+#                                       # freshness (rejects > 5
+#                                       # min skew).
 #   include-command-output-in-response: true
 #   include-command-output-in-response-on-error: false
 #   trigger-rule:
@@ -77,6 +83,8 @@
       name: skovbyesexologi.com
     - source: string
       name: staging
+    - source: payload
+      name: ts
   include-command-output-in-response: true
   include-command-output-in-response-on-error: false
   trigger-rule:
@@ -95,6 +103,8 @@
       name: skovbyesexologi.com
     - source: string
       name: production
+    - source: payload
+      name: ts
   include-command-output-in-response: true
   include-command-output-in-response-on-error: false
   trigger-rule:
