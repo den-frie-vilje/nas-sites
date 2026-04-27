@@ -43,11 +43,11 @@ where `/run/lock` may be root-only.
 | Path | Owner:Group | Mode | Why |
 |---|---|---|---|
 | `deploy-agent.sh` | `root:root` | `0755` | `deploy` can execute, cannot tamper. Updates require operator sudo. |
-| `sites.d/*.env` | `root:deploy` | `0640` | Contains CF tokens + OAuth secrets. `deploy` reads, cannot rewrite. |
+| `sites.d/*.env` | `root:docker` | `0640` | Contains CF tokens + OAuth secrets. `deploy` reads, cannot rewrite. |
 | `state/`, `state/runs/` | `deploy:users` | `0750` | Agent writes run logs here. |
 | `repo/` (the nas-sites clone) | `deploy:users` | `0755` | Operator pulls; reference only — agent doesn't read at runtime. |
 | `/volume1/docker/<domain>/repo/` | `deploy:users` | `0755` | Site repo clone. Agent does `git fetch + reset` here. |
-| `/volume1/docker/<domain>/<env>/<env>.env` | `root:deploy` | `0640` | Compose-time secrets. Same model as `sites.d/`. |
+| `/volume1/docker/<domain>/<env>/<env>.env` | `root:docker` | `0640` | Compose-time secrets. Same model as `sites.d/`. |
 | `/tmp/nas-sites-deploy/` | `deploy:users` | `0750` | Lock files. Agent creates on first run. |
 
 ## One-time bootstrap
@@ -138,10 +138,10 @@ branch, compose file path. Then:
 - creates `/volume1/docker/<domain>/{repo,<env>}/` owned `deploy:users`;
 - `git clone`s the site repo at the chosen branch (skips if already
   cloned);
-- creates the per-stack `<env>.env` (root:deploy 0640) and opens
+- creates the per-stack `<env>.env` (root:docker 0640) and opens
   `$EDITOR` for compose-time secrets (`CADDY_PORT`, OAuth IDs, etc.);
 - copies `nas-agent/sites.env.example` into
-  `/volume1/docker/nas-sites/sites.d/<domain>.<env>.env` (root:deploy
+  `/volume1/docker/nas-sites/sites.d/<domain>.<env>.env` (root:docker
   0640), pre-fills the values you typed, opens `$EDITOR` for `CF_API_TOKEN`
   / `CF_ZONE_ID`;
 - offers to run a one-off agent fire as a smoke test.
@@ -575,7 +575,7 @@ trivially.
    vulnerability that pivots into the deploy process) cannot replace
    the agent and persist.
 3. **Site configs cannot be rewritten by `deploy`.** `sites.d/*.env` and
-   per-stack `<env>.env` are `root:deploy 0640` — readable by the agent,
+   per-stack `<env>.env` are `root:docker 0640` — readable by the agent,
    not writable. Secrets cannot be exfiltrated by tampering with the
    files (they can still be read by `deploy` — that's the threat model
    for "agent compromise = secrets gone," same as any agent design).
