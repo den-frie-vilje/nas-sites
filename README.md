@@ -183,6 +183,25 @@ Scaffold `templates/` with ready-to-fork shapes for the common cases:
 Each template includes its own Dockerfile, compose files, Caddyfiles,
 nginx.conf (if static), and `.github/workflows/deploy-*.yml` stubs.
 
+**Per-site repo bootstrap checklist** (codify in the template README so
+new sites don't forget):
+
+- [ ] `staging` branch created + protected (no force-push, no deletion,
+  same shape as `main` — staging is tied to the staging deploy
+  environment, deleting it accidentally would orphan the deploy gate)
+- [ ] `dependabot.yml` with `target-branch: staging` so dependency
+  updates inherit the staging-soak before the production gate
+- [ ] `production` GitHub environment exists (holds
+  `PRODUCTION_WEBHOOK_SECRET`, no reviewer rule)
+- [ ] `production-gate` GitHub environment exists with the maintainer
+  as required reviewer, no secrets — Phase 1 / M1 pattern
+- [ ] `deploy-production.yml` includes `verify-signatures` job with
+  per-commit path filtering — Phase 3 / C2 + H4 pattern (commits
+  that touch anything outside `src/content/**` + `static/img/**`
+  must be GitHub-verified-signed)
+- [ ] OAuth app registered on GitHub for any in-repo CMS that needs it,
+  with redirect URL pointing at the staging hostname's `/auth/callback`
+
 ### Ansible-based NAS bootstrap
 
 - [ ] `ansible/bootstrap-nas.yml` — one-shot NAS provisioning (docker,
