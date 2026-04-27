@@ -174,9 +174,11 @@ root-equivalent), see
   model.
 - **[NAS-BOOTSTRAP.md](docs/NAS-BOOTSTRAP.md)** — fresh-NAS provisioning
   (DNS, certs, networks, vhosts).
-- **[MIGRATION-FROM-WEBHOOK.md](docs/MIGRATION-FROM-WEBHOOK.md)** —
-  cutover guide for sites still using the prior webhook-based pipeline.
-  Time-boxed: deletes itself once all sites are migrated.
+- **[BRANCH-PROTECTION.md](docs/BRANCH-PROTECTION.md)** — required GitHub
+  repo settings (signed commits, force-push block, Code Owners review).
+- **[SYNOTOOLS-HARDENING.md](docs/SYNOTOOLS-HARDENING.md)** — Synology-
+  specific tooling choices: synowebapi cert-import hook, what was
+  deliberately not scripted and why.
 
 ## Roadmap
 
