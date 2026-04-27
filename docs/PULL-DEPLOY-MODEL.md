@@ -199,17 +199,14 @@ DSM minor-version updates per Synology's developer documentation, and they
 sit outside the `/volume1/docker/` backup tree. Use this only if you accept
 re-installing after each DSM update.
 
-### 7. Make GHCR signature artifacts public (per-image, one-time)
+### 7. Make first-party GHCR images public
 
-When CI signs an image with `cosign sign`, the signature lands in GHCR
-as a *separate* OCI artifact (tagged `sha256-<digest>.sig` against the
-same image repository). [GitHub Packages](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
-defaults every newly-published package to **private**, even when the
-parent image is public. The agent on the NAS pulls signatures
-anonymously, so a private signature artifact returns HTTP 401 and the
-agent reports `signature verification FAILED: no signatures found`.
+The agent pulls signatures and images anonymously. If the image
+package on GHCR is private, both the image and its associated cosign
+signature artifact return HTTP 401 and the agent reports `signature
+verification FAILED: no signatures found`.
 
-Make the package public **once** per image (not per-deploy):
+Make the package public **once** per image, in the GitHub UI:
 
 > GitHub → org `den-frie-vilje` → Packages → `<image-name>` → Package
 > settings → Danger Zone → Change visibility → **Public** → confirm
@@ -220,12 +217,12 @@ endpoint — and `gh` CLI has no `package` subcommand for this
 ([cli/cli#6820](https://github.com/cli/cli/issues/6820), open since
 2022). Settings GUI is the only path.
 
-After flipping visibility, anonymous `cosign verify` succeeds and the
-agent can deploy. Re-run the agent manually to confirm:
-
-```sh
-sudo -u deploy /volume1/docker/nas-sites/deploy-agent.sh <domain> <env>
-```
+In cosign v3 (the version `build-and-sign.yml` ships), the signature
+is stored as an [OCI 1.1 referrer artifact](https://github.com/sigstore/cosign/blob/v3.0.0/CHANGELOG.md)
+linked to the image's manifest, NOT as a separate `sha256-…sig` tag
+that would create a brand-new package version. The referrer inherits
+the parent image's visibility, so flipping the image to public is
+sufficient — no separate sig package to manage.
 
 ### 8. Smoke-test
 
@@ -519,24 +516,32 @@ nothing surprises an operator who hasn't read the script.
 
 ### "signature verification FAILED"
 
-Cosign refused to validate one or more images. Possible causes:
+Cosign refused to validate one or more images. Possible causes,
+ordered by how often they bite:
 
-- **The signature artifact is private on GHCR** — the most common
-  cause on first deploy of a new image. `cosign verify` reports
-  "no signatures found" because the anonymous fetch of the
-  `sha256-<digest>.sig` tag returns HTTP 401. Fix: make the package
-  public per [§7](#7-make-ghcr-signature-artifacts-public-per-image-one-time)
-  of the bootstrap. Diagnose with:
-  ```sh
-  curl -sSI 'https://ghcr.io/v2/den-frie-vilje/<image>/manifests/sha256-<digest>.sig'
-  # 401 → package is private; 404 → never pushed; 200 → readable
-  ```
+- **Cosign version mismatch between CI and the agent.** Cosign v3
+  changed the default signature storage to OCI 1.1 referrers + the new
+  protobuf bundle format ([v3.0.0 CHANGELOG](https://github.com/sigstore/cosign/blob/v3.0.0/CHANGELOG.md)).
+  Cosign v2 doesn't find what v3 wrote. Both ends must be on the same
+  major. CI's pin is `cosign-release:` in
+  `.github/workflows/build-and-sign.yml`; the agent's pin is
+  `COSIGN_IMAGE` near the top of `nas-agent/deploy-agent.sh`. Bump
+  them together.
 - The image was never signed (CI ran a workflow other than
   `build-and-sign.yml`). Confirm the site's caller workflow points at
   `build-and-sign.yml` and re-trigger a build.
 - The signing identity regex doesn't match. The agent expects
   `^https://github\.com/den-frie-vilje/[^/]+/\.github/workflows/build-and-sign\.yml@refs/heads/(main|staging)$`.
   If you renamed the workflow or the org, update both ends.
+- The image package on GHCR is private. Anonymous pulls fail with HTTP
+  401 → the agent reports "no signatures found." Make the package
+  public per [§7](#7-make-first-party-ghcr-images-public). Diagnose
+  with the bearer-token flow:
+  ```sh
+  TOKEN=$(curl -sSL "https://ghcr.io/token?service=ghcr.io&scope=repository:den-frie-vilje/<image>:pull" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+  curl -sSI -H "Authorization: Bearer $TOKEN" "https://ghcr.io/v2/den-frie-vilje/<image>/manifests/<tag>"
+  # 200 → readable; 401 with anon token → still private; 404 → not pushed
+  ```
 - Sigstore Fulcio/Rekor is having an outage. Verify with
   `curl -fSs https://fulcio.sigstore.dev/api/v2/configuration` and
   `curl -fSs https://rekor.sigstore.dev/api/v1/log`. If Sigstore is down,
