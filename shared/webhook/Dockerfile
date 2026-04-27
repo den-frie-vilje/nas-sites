@@ -11,9 +11,9 @@
 # Synology's kernel ships without seccomp support, breaking
 # any RUN step during an in-place docker build on DSM.
 
-FROM almir/webhook:2.8.3 AS webhook-binary
+FROM almir/webhook:2.8.3@sha256:f77cc91c91d1527b48052280af38b50791e842ad8dd291e9b360a0c13c9ca991 AS webhook-binary
 
-FROM alpine:3.23
+FROM alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
 
 RUN apk add --no-cache \
     docker-cli \
