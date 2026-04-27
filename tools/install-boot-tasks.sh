@@ -20,6 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 require_dsm
 require_root
+# This script only walks the operator through GUI clicks — no heavy
+# tooling needed beyond bash builtins.
 
 heading "Persist docker.sock group ownership across reboots"
 

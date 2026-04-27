@@ -102,14 +102,20 @@ FILTER_ENV="${2:-}"
 # also visible on manual SSH invocation) AND syslog via `logger`, which DSM
 # Log Center ingests. `logger` failure is non-fatal so the script still works
 # on hosts without syslog.
+#
+# Timestamp uses an explicit format string instead of `date -Iseconds`
+# because BusyBox `date` (which DSM ships) does not support `-I` — only
+# GNU `date` does. The literal format here produces ISO-8601 in UTC.
+_ts() { date -u +'%Y-%m-%dT%H:%M:%SZ'; }
+
 log() {
-    local msg="[$(date -Iseconds)] $*"
+    local msg="[$(_ts)] $*"
     printf '%s\n' "$msg"
     logger -t nas-sites-deploy -- "$*" 2>/dev/null || true
 }
 
 err() {
-    local msg="[$(date -Iseconds)] ERROR: $*"
+    local msg="[$(_ts)] ERROR: $*"
     printf '%s\n' "$msg" >&2
     logger -t nas-sites-deploy -p user.err -- "ERROR: $*" 2>/dev/null || true
 }

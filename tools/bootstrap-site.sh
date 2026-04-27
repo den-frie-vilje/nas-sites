@@ -24,6 +24,7 @@ EDITOR="${EDITOR:-vi}"
 
 require_dsm
 require_root
+require_tools git sed mkdir cp chmod chown
 
 heading "Bootstrap a (site, env) for the pull-only agent"
 

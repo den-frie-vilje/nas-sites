@@ -14,6 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 require_dsm
 require_root
+require_tools cmp diff cp chmod chown
 
 heading "Install local-synowebapi acme.sh deploy hook"
 
