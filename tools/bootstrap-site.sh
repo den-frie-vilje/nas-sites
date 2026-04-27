@@ -10,14 +10,13 @@
 #   3. git clone the site repo as the deploy user (so the clone is
 #      already deploy-owned at the Unix layer, the agent's later
 #      `git fetch` works without permission gymnastics)
-#   4. Create the per-stack <env>.env at root:deploy 0640 and open $EDITOR
+#   4. Create the per-stack <env>.env at root:docker 0640 and open $EDITOR
 #   5. Create the per-(site, env) sites.d/<domain>.<env>.env from the
-#      template (root:deploy 0640), pre-fill the values, open $EDITOR
+#      template (root:docker 0640), pre-fill the values, open $EDITOR
 #   6. Smoke-test: run the deploy agent with a one-site filter
 #
-# Idempotent: re-running after a partial failure (e.g. previous run hit
-# the `chown root:deploy` failure before the deploy group existed)
-# re-applies ownership and permissions even when the file already exists.
+# Idempotent: re-running after a partial failure re-applies ownership
+# and permissions even when the file already exists.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,8 +59,8 @@ SITES_D_FILE="$SITES_D/$DOMAIN.$ENV_NAME.env"
 heading "Plan"
 plan "create dir $SITE_REPO_DIR + $STACK_DIR (deploy via ACL inheritance)"
 plan "git clone https://github.com/$REPO at branch $BRANCH → $SITE_REPO_DIR (as deploy)"
-plan "create empty $ENV_FILE (root:deploy 0640) and open in \$EDITOR"
-plan "copy $SITE_TEMPLATE → $SITES_D_FILE (root:deploy 0640) and open in \$EDITOR"
+plan "create empty $ENV_FILE (root:docker 0640) and open in \$EDITOR"
+plan "copy $SITE_TEMPLATE → $SITES_D_FILE (root:docker 0640) and open in \$EDITOR"
 plan "smoke-test: run agent with filter ($DOMAIN $ENV_NAME)"
 
 confirm "Proceed?" || { echo "Aborted by operator."; exit 0; }
@@ -92,12 +91,12 @@ fi
 # ─── 3. per-stack env file ────────────────────────────────────────────────
 heading "3/5 per-stack env file ($ENV_FILE)"
 # Always re-apply ownership + perms, even when file exists. This makes the
-# script self-healing if a previous run failed at chown (e.g. before the
-# deploy group existed).
+# script self-healing if a previous run failed mid-way through (e.g. an
+# earlier chown failed because the docker group wasn't set up yet).
 if [ -f "$ENV_FILE" ]; then
     echo "$ENV_FILE already exists; preserving content + re-applying ownership."
     run chmod 0640 "$ENV_FILE"
-    run chown root:deploy "$ENV_FILE"
+    run chown root:docker "$ENV_FILE"
 else
     create_empty_file 0640 root deploy "$ENV_FILE"
 fi
@@ -115,7 +114,7 @@ mkdir -p "$SITES_D"
 if [ -f "$SITES_D_FILE" ]; then
     echo "$SITES_D_FILE already exists; preserving content + re-applying ownership."
     run chmod 0640 "$SITES_D_FILE"
-    run chown root:deploy "$SITES_D_FILE"
+    run chown root:docker "$SITES_D_FILE"
 else
     install_file 0640 root deploy "$SITE_TEMPLATE" "$SITES_D_FILE"
     # Pre-populate the values we asked for so the operator only has to fill

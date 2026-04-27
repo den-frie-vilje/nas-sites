@@ -26,11 +26,9 @@ require_dsm
 require_root
 require_tools awk tr sort grep synouser synogroup chown chmod
 
-heading "Bootstrap: deploy user + groups + socket permissions"
+heading "Bootstrap: deploy user + docker group + socket permissions"
 plan "create user 'deploy' (locked password)"
-plan "create group 'deploy' (used for read-only access to agent secrets)"
 plan "create group 'docker' if absent"
-plan "set 'deploy' group members to {existing members + deploy}"
 plan "set 'docker' group members to {existing members + deploy}"
 plan "chown root:docker /var/run/docker.sock; chmod 660"
 plan "verify 'sudo -u deploy docker info' works"
@@ -55,7 +53,7 @@ add_user_to_group() {
 }
 
 # ─── 1. deploy user ────────────────────────────────────────────────────────
-heading "1/6 deploy user"
+heading "1/5 deploy user"
 if synouser --get deploy > /dev/null 2>&1; then
     echo "User 'deploy' already exists; skipping create."
 else
@@ -68,36 +66,25 @@ fi
 # field as unusable.
 run synouser --setpw deploy '!'
 
-# ─── 2. deploy group ───────────────────────────────────────────────────────
-# `synouser --add` does NOT create a same-named group on DSM (the user's
-# primary group is `users` by convention). The agent's secret files
-# (/volume1/docker/nas-sites/sites.d/*.env, per-stack <env>.env) want
-# root:deploy 0640 ownership: root owns so a compromised deploy shell
-# cannot rewrite secrets, deploy GROUP reads so the agent can load them.
-# That requires a `deploy` group to exist and the deploy user to be a
-# member.
-heading "2/6 deploy group"
-if synogroup --get deploy > /dev/null 2>&1; then
-    echo "Group 'deploy' already exists; skipping create."
-else
-    run synogroup --add deploy
-fi
-add_user_to_group deploy deploy
-
-# ─── 3. docker group ───────────────────────────────────────────────────────
-heading "3/6 docker group"
+# ─── 2. docker group ───────────────────────────────────────────────────────
+# Single group does double duty: docker-socket access AND read access to
+# the agent's secret files (sites.d/*.env, per-stack <env>.env). A
+# separate `deploy` group adds no protection because anyone in `docker`
+# can `docker run --privileged -v /:/host alpine cat /host/<secret>` and
+# get root anyway. The single-group model is honest about that.
+heading "2/5 docker group"
 if synogroup --get docker > /dev/null 2>&1; then
     echo "Group 'docker' already exists; skipping create."
 else
     run synogroup --add docker
 fi
 
-# ─── 4. add deploy to docker group ─────────────────────────────────────────
-heading "4/6 docker group membership"
+# ─── 3. add deploy to docker group ─────────────────────────────────────────
+heading "3/5 docker group membership"
 add_user_to_group deploy docker
 
-# ─── 5. socket ownership ───────────────────────────────────────────────────
-heading "5/6 docker.sock group ownership"
+# ─── 4. socket ownership ───────────────────────────────────────────────────
+heading "4/5 docker.sock group ownership"
 if [ ! -S /var/run/docker.sock ]; then
     echo "WARN: /var/run/docker.sock not present. Container Manager not running?"
     echo "      Start Container Manager from DSM Package Center, then re-run this script."
@@ -109,8 +96,8 @@ echo
 echo "NOTE: Container Manager resets these on every restart and on every reboot."
 echo "      Run tools/install-boot-tasks.sh to persist this via a Triggered Task."
 
-# ─── 6. verify user + groups ───────────────────────────────────────────────
-heading "6/7 verify deploy can reach docker + has deploy group"
+# ─── 5. verify user + group + ACL ──────────────────────────────────────────
+heading "5/5 verify deploy can reach docker + has /volume1/docker access"
 if sudo -u deploy docker info > /dev/null 2>&1; then
     echo "OK — 'sudo -u deploy docker info' succeeded."
 else
@@ -118,18 +105,17 @@ else
     echo "       Check group membership took effect (deploy may need to log out/in)."
     exit 1
 fi
-if sudo -u deploy id -nG | tr ' ' '\n' | grep -qx deploy; then
-    echo "OK — deploy is a member of the 'deploy' group."
+if sudo -u deploy id -nG | tr ' ' '\n' | grep -qx docker; then
+    echo "OK — deploy is a member of the 'docker' group."
 else
-    echo "FAIL — deploy is NOT in the 'deploy' group. Re-check step 2."
+    echo "FAIL — deploy is NOT in the 'docker' group. Re-check step 3."
     exit 1
 fi
 
-# ─── 7. /volume1/docker access prerequisite ────────────────────────────────
+# Synology ACL grant on /volume1/docker is the operator's manual step.
 # This script can't grant ACLs (synoacltool writes are undocumented +
-# brittle); the operator must set them via DSM. Surface this at the end so
-# they know what's left.
-heading "7/7 deploy access to /volume1/docker (ACL prerequisite for next steps)"
+# brittle); we surface here whether the grant is in place so the operator
+# knows what's left before bootstrap-site.sh.
 if sudo -u deploy test -w /volume1/docker && sudo -u deploy test -r /volume1/docker; then
     echo "OK — deploy can read+write /volume1/docker."
     echo "     (Whether via Synology ACL or Unix perms, doesn't matter — both work.)"
