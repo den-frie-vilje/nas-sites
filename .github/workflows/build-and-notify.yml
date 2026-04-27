@@ -103,7 +103,7 @@ jobs:
       - name: Set up QEMU
         # Needed for multi-arch builds — linux/arm64 on amd64 runners
         # goes through QEMU emulation. Slow but ~free.
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
