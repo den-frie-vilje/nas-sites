@@ -24,6 +24,7 @@ AGENT_SRC="$REPO_DIR/nas-agent/deploy-agent.sh"
 
 require_dsm
 require_root
+require_tools git cmp diff cp chmod chown
 
 heading "Update nas-sites deploy agent"
 plan "git pull (fast-forward) in $REPO_DIR"

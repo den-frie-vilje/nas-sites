@@ -25,6 +25,26 @@ require_root() {
     fi
 }
 
+# Refuse to run unless every named tool is on PATH. Use this at the top of
+# any script that depends on a non-bash-builtin command, so we fail at
+# startup with a clear diagnostic instead of partway through with a cryptic
+# "command not found." DSM is a stripped-down embedded Linux — many tools
+# considered "always present" elsewhere are absent (`getent`, `jq`,
+# `python3`, `realpath` flags, `column`, `envsubst`, GNU `install`, etc).
+require_tools() {
+    local missing=()
+    local t
+    for t in "$@"; do
+        command -v "$t" > /dev/null 2>&1 || missing+=("$t")
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "ERROR: $0 needs these tools, which are not on PATH:" >&2
+        printf '  - %s\n' "${missing[@]}" >&2
+        echo "PATH was: $PATH" >&2
+        exit 2
+    fi
+}
+
 # Print a section heading in the operator's terminal.
 heading() {
     printf '\n\033[1;36m=== %s ===\033[0m\n' "$*"

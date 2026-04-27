@@ -24,6 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 require_dsm
 require_root
+require_tools awk tr sort grep synouser synogroup chown chmod
 
 heading "Bootstrap: deploy user + docker group + socket permissions"
 plan "create user 'deploy' (locked password)"
@@ -61,7 +62,11 @@ heading "3/5 docker group membership"
 # GOTCHA: synogroup --member <group> <users…> REPLACES the member list with
 # the supplied users. To add 'deploy' without dropping existing members, we
 # enumerate the current members from /etc/group and append.
-existing_members=$(getent group docker | awk -F: '{print $4}' | tr ',' ' ')
+#
+# /etc/group line format: <name>:<password>:<gid>:<comma-separated-members>
+# Parse field 4 directly with awk — `getent` is glibc-only and is NOT
+# present on stock DSM (BusyBox ships no getent applet).
+existing_members=$(awk -F: '$1 == "docker" {print $4}' /etc/group | tr ',' ' ')
 new_members=$(printf '%s deploy\n' "$existing_members" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')
 echo "Current members of 'docker': ${existing_members:-<none>}"
 echo "After this step:             $new_members"
