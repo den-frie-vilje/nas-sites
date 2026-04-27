@@ -1,0 +1,41 @@
+# systemd unit for the nas-sites pull-only deploy agent.
+#
+# SECONDARY scheduling path. On Synology DSM the canonical scheduler is
+# DSM Task Scheduler (see docs/PULL-DEPLOY-MODEL.md), because custom units
+# in /etc/systemd/system/ are not reliably preserved across DSM updates per
+# Synology's own developer documentation, and they live outside the
+# /volume1/docker/ tree that's covered by the offsite backup.
+#
+# These files are kept for:
+#   - non-DSM Linux hosts that may run this agent in future
+#   - operators who explicitly accept (a) the maintenance burden of
+#     re-installing after DSM updates and (b) the loss of backup coverage
+#     for the unit files themselves
+#
+# Source of truth lives at /volume1/docker/nas-sites/systemd/ alongside the
+# rest of the agent. Only the install step touches /etc — and only because
+# systemd insists on reading from there:
+#
+#   sudo cp /volume1/docker/nas-sites/systemd/nas-sites-deploy.service \
+#           /volume1/docker/nas-sites/systemd/nas-sites-deploy.timer \
+#           /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nas-sites-deploy.timer
+#
+# Inspect:
+#   systemctl status nas-sites-deploy.timer
+#   journalctl -u nas-sites-deploy.service -n 200
+
+[Unit]
+Description=nas-sites pull-only deploy agent (oneshot)
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/volume1/docker/nas-sites/deploy-agent.sh
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/volume1/docker/nas-sites/deploy-agent.sh
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=20m

@@ -1,0 +1,20 @@
+# systemd timer for the nas-sites pull-only deploy agent.
+# See nas-sites-deploy.service for context (and the DSM-Task-Scheduler-first
+# rationale).
+
+[Unit]
+Description=Run nas-sites deploy agent every 5 minutes
+
+[Timer]
+# 2 min after boot to let docker.service settle on slow-starting hosts.
+OnBootSec=2min
+# Then every 5 min from the end of the previous run (not from a wall clock),
+# so a long-running deploy doesn't queue up overlapping fires.
+OnUnitInactiveSec=5min
+Unit=nas-sites-deploy.service
+# Don't try to "catch up" missed fires after long downtime — one fresh run
+# at the next interval is what we want.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

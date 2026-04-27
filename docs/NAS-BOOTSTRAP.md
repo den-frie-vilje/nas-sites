@@ -1,150 +1,109 @@
-# NAS bootstrap — the first site on a fresh Synology
+# NAS bootstrap — the parts that aren't about the deploy pipeline
 
-Condensed from [skovbyesexologi.com's DEPLOY.md](https://github.com/den-frie-vilje/skovbyesexologi.com/blob/main/DEPLOY.md),
-which remains the authoritative step-by-step walkthrough for
-the first consumer site. This doc will grow into a fully
-site-agnostic bootstrap when the site-template extraction (Stage 3)
-is done — for now it points back to that one.
+This doc covers the one-time NAS provisioning that the deploy agent
+*assumes is already in place* — DNS, certs, networks, vhosts. The deploy
+agent itself, the per-site setup, and day-2 ops live in
+[PULL-DEPLOY-MODEL.md](PULL-DEPLOY-MODEL.md), which drives everything
+through interactive scripts under [`tools/`](../tools/).
 
 ## Prerequisite: a DSM 7.2.2+ NAS with Container Manager installed
 
-That's it for prerequisites. No Tailscale, no SSH from CI, no
-inbound services beyond :443.
+That's it for prerequisites.
 
 ## Bootstrap order
 
 1. **DNS wildcards**: `*.stage.denfrievilje.dk` + `*.prod.denfrievilje.dk`
-   → NAS public IP. (DEPLOY.md §1)
-2. **acme.sh wildcard certs** installed on the NAS, imported
-   into DSM's cert store via the `synology_dsm` deploy hook.
-   (DEPLOY.md §2 — includes the ZeroSSL-default workaround,
-   DSM non-default-port flags, the cert-slot-overwrite gotcha
-   (SYNO_Certificate + SYNO_Create=1), and the Task Scheduler
-   setup.)
-3. **deploy user + docker paths + shared docker network**:
+   → NAS public IP.
+2. **acme.sh wildcard certs** installed on the NAS, imported into DSM's
+   cert store. The recommended import hook is the local-`synowebapi` one
+   in [`tools/syno-acme-local-hook/`](../tools/syno-acme-local-hook/) —
+   removes the on-disk DSM admin credential the upstream `synology_dsm`
+   hook needs. Install with:
    ```sh
-   sudo mkdir -p /volume1/docker/webhook
-   sudo chown -R deploy:users /volume1/docker
+   sudo /volume1/docker/nas-sites/repo/tools/syno-acme-local-hook/install.sh
+   ```
+   See [SYNOTOOLS-HARDENING.md](SYNOTOOLS-HARDENING.md) for the full
+   setup including the migration steps for an existing acme.sh install.
+3. **Shared docker network**:
+   ```sh
    sudo docker network create nas-deploy
    ```
-4. **Shared webhook container**:
-
-   The NAS keeps a permanent shallow clone of `nas-sites` at
-   `/volume1/docker/webhook/nas-sites/`. `deploy.sh` git-pulls
-   this clone on every fire and propagates any changes to the
-   webhook's mounted `hooks.yaml` + `scripts/deploy.sh` (see
-   the `NAS_SITES` self-update block in `deploy.sh`). So bootstrap
-   does TWO things: (1) the persistent clone for self-update,
-   (2) the initial copy of the webhook artefacts into the
-   webhook stack's mount paths.
-
-   ```sh
-   # 1) Persistent clone for ongoing self-update.
-   sudo git clone --depth 1 \
-     https://github.com/den-frie-vilje/nas-sites.git \
-     /volume1/docker/webhook/nas-sites
-   sudo chown -R deploy:users /volume1/docker/webhook/nas-sites
-
-   # 2) Initial copy into the webhook stack's mount paths. After
-   #    this, edits to nas-sites' shared/webhook/{hooks.yaml,
-   #    scripts/deploy.sh} propagate via deploy.sh's self-update
-   #    block — no manual cp per change.
-   SRC=/volume1/docker/webhook/nas-sites/shared/webhook
-   sudo cp "$SRC/compose.yml" /volume1/docker/webhook/compose.yml
-   sudo mkdir -p /volume1/docker/webhook/webhook/scripts
-   sudo cp "$SRC/hooks.yaml" /volume1/docker/webhook/webhook/hooks.yaml
-   sudo cp "$SRC/scripts/deploy.sh" /volume1/docker/webhook/webhook/scripts/deploy.sh
-   sudo chmod +x /volume1/docker/webhook/webhook/scripts/deploy.sh
-   sudo cp "$SRC/webhook.env.example" /volume1/docker/webhook/webhook.env
-   sudo chmod 600 /volume1/docker/webhook/webhook.env
-   # Edit webhook.env with HMAC secrets per site (see webhook.env.example
-   # in this repo for the naming convention).
-
-   cd /volume1/docker/webhook
-   sudo docker compose up -d
-   ```
-5. **Per-site dirs + staging.env/production.env** — follow the
-   first consumer site's repo (skovbyesexologi.com/DEPLOY.md §4)
-   until the site-template extraction formalises this step.
-6. **DSM Web Station vhost per (site, env)** — hostname
+4. **Pull-only deploy agent** — see
+   [PULL-DEPLOY-MODEL.md §One-time bootstrap](PULL-DEPLOY-MODEL.md#one-time-bootstrap).
+   Five interactive scripts walk through deploy user, docker group, agent
+   install, boot-up task, and DSM Task Scheduler entry.
+5. **DSM Web Station vhost per (site, env)** — hostname
    `<DOMAIN_DASHED>.<env>.denfrievilje.dk`, proxy_pass to the
-   Caddy-container loopback port, bind the `*.stage.*` or
-   `*.prod.*` wildcard cert. Staging vhost adds
-   `X-Robots-Tag: noindex, nofollow`.
+   Caddy-container loopback port, bind the `*.stage.*` or `*.prod.*`
+   wildcard cert. Staging vhost adds `X-Robots-Tag: noindex, nofollow`.
+   This step is GUI-only — Web Station's APIs are too unstable across
+   DSM versions to script (see SYNOTOOLS-HARDENING.md §Web Station).
 
-## Per-site onboarding after the first
+## Per-site onboarding
 
-- Append two hook entries to `shared/webhook/hooks.yaml` IN THIS
-  REPO (not on the NAS). Commit + push. The NEXT deploy fire on
-  ANY existing site git-pulls the nas-sites clone and propagates
-  the new entries to the webhook's hooks.yaml. Webhook
-  `-hotreload` picks them up within a second — no restart needed.
-- Append two HMAC secrets (+ optional CF vars) to
-  `/volume1/docker/webhook/webhook.env` ON THE NAS (these are
-  per-NAS secrets, NOT committed) under the site's
-  `<DOMAIN_SAFE>_…` prefix. Then on the NAS:
-  ```sh
-  cd /volume1/docker/webhook && sudo docker compose down && sudo docker compose up -d
-  ```
-  (env files are baked at container creation, so a `restart`
-  doesn't pick up new secrets — needs full down + up).
-- Create `/volume1/docker/<DOMAIN>/{repo,staging,production}/`
-  directories
-- Clone the site repo into `/volume1/docker/<DOMAIN>/repo`
-- Copy staging.env.example → staging.env, populate OAuth creds
-  + CADDY_PORT (pick next-free pair)
-- Create the staging + production DSM vhosts
-- Push any commit to the site's `staging` branch — deploy fires
+```sh
+sudo /volume1/docker/nas-sites/repo/tools/bootstrap-site.sh
+```
 
-The shared webhook is hot-reloading, and the site's first
-`docker compose up` is triggered by the first CI deploy fire +
-the chicken-and-egg manual bring-up covered in the first site's
-DEPLOY.md §8.
+Prompts for domain, environment, repo, branch, compose file path. Then
+creates the per-site directory tree (`/volume1/docker/<DOMAIN>/{repo,<env>}/`),
+clones the site repo, drops the per-stack env file, copies the agent
+config from `nas-agent/sites.env.example`, opens `$EDITOR` on each, and
+offers to run a one-off agent fire as a smoke test.
+
+Run twice per site (once for staging, once for production). The DSM Web
+Station vhost still has to be added by hand per step 5 above.
 
 ## Gotchas
 
-### `sudo git` on the nas-sites clone fails with "dubious ownership"
+### Custom systemd units do not survive DSM updates
 
-The bootstrap above clones `nas-sites` to
-`/volume1/docker/webhook/nas-sites` and chowns the result to
-`deploy:users`. When you later run a `sudo git ...` command
-against that clone from the host shell, Git 2.35+ refuses with
-`fatal: detected dubious ownership in repository at '...'`
-because `sudo`-as-root is operating on a clone owned by a
-different user. Two workarounds:
+Per Synology's developer documentation, `/etc/systemd/system/` is not
+preserved across DSM minor-version updates. The deploy agent's
+recommended scheduler is therefore DSM Task Scheduler, not systemd. The
+repo includes systemd unit templates ([`nas-agent/systemd/`](../nas-agent/systemd))
+for non-DSM hosts and for operators who explicitly accept the
+maintenance burden.
+
+### DSM Task Scheduler "every N minutes" stops after one hour
+
+The `Last run time` field defaults to one hour after `First run time`.
+For a continuously-firing agent, set it to `23:59` explicitly. See
+[PULL-DEPLOY-MODEL.md §6](PULL-DEPLOY-MODEL.md#6-schedule-the-agent).
+
+### `/etc/crontab` edits are overwritten by Task Scheduler
+
+DSM's Task Scheduler is the writer of `/etc/crontab`. Hand edits are
+wiped on reboot or after any Task Scheduler change. Use the GUI as the
+source of truth.
+
+### `sudo git` on a clone owned by another user fails with "dubious ownership"
+
+If you `sudo git clone ...` then later run a `git ...` command as another
+user (or vice versa), Git 2.35+ refuses with `fatal: detected dubious
+ownership`. Two workarounds:
 
 ```sh
-# Option A: trust this clone for root's git globally (one-time).
-sudo git config --global --add safe.directory \
-  /volume1/docker/webhook/nas-sites
+# A: trust this clone for root's git globally (one-time).
+sudo git config --global --add safe.directory /volume1/docker/<path>
 
-# Option B: run as the clone owner instead of sudo.
-sudo -u deploy git -C /volume1/docker/webhook/nas-sites status
+# B: run as the clone owner.
+sudo -u <owner> git -C /volume1/docker/<path> status
 ```
 
-Either works. The webhook container itself is unaffected: its
-`deploy.sh` does `git config --global --add safe.directory '*'`
-at startup and runs every git command from inside the
-container, so its self-update path is never blocked by this.
+The deploy agent applies workaround A internally on every fire, so its
+own git operations are never blocked by this.
 
-### Pre-extraction layouts (existing NASes bootstrapped before
-2026-04)
+### `synogroup --member` REPLACES the member list
 
-A NAS bootstrapped before the `nas-sites` extraction (PR #4 in
-[skovbyesexologi.com](https://github.com/den-frie-vilje/skovbyesexologi.com/pull/4))
-has a slightly different layout: `compose.yml` lives inside
-`/volume1/docker/webhook/webhook/` (not at the top level
-`/volume1/docker/webhook/compose.yml` shown above), and the
-self-update used to read from each consumer site's repo
-(broken since extraction; fixed by the deploy.sh self-update
-update in
-[`ba1d97a`](https://github.com/den-frie-vilje/nas-sites/commit/ba1d97a)).
+Not append. If you `synogroup --member docker deploy` on a docker group
+that already had members, you'll silently drop them. The
+`tools/bootstrap-deploy-user.sh` script reads `getent group docker` first
+and re-applies the full member list.
 
-Existing NASes don't need to migrate — both layouts function
-identically for ongoing operations. The new layout above is
-the target for fresh bootstraps and for future site templates.
-If you want to align an existing NAS, the migration is roughly:
-move `compose.yml` to the top level, remove the leftover
-`Dockerfile` from `/volume1/docker/webhook/webhook/` (it was
-used pre-extraction when the image built locally; the runtime
-now pulls from GHCR), then `docker compose down && up -d`.
+### `install` is not on stock DSM
+
+DSM ships BusyBox utilities for most of `/bin` and `/usr/bin`, and
+BusyBox has no `install` applet. Use `cp + chmod + chown` instead. The
+`tools/lib/common.sh` `install_file` helper does this; the operator
+scripts use it consistently.
