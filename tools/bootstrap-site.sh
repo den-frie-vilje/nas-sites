@@ -98,7 +98,7 @@ if [ -f "$ENV_FILE" ]; then
     run chmod 0640 "$ENV_FILE"
     run chown root:docker "$ENV_FILE"
 else
-    create_empty_file 0640 root deploy "$ENV_FILE"
+    create_empty_file 0640 root docker "$ENV_FILE"
 fi
 echo "Opening \$EDITOR ($EDITOR) — populate CADDY_PORT, OAuth secrets, etc."
 echo "(Save and quit when done. The deploy agent will pick up changes on next fire.)"
@@ -111,22 +111,25 @@ if [ ! -f "$SITE_TEMPLATE" ]; then
     exit 1
 fi
 mkdir -p "$SITES_D"
-if [ -f "$SITES_D_FILE" ]; then
-    echo "$SITES_D_FILE already exists; preserving content + re-applying ownership."
+if [ ! -f "$SITES_D_FILE" ]; then
+    install_file 0640 root docker "$SITE_TEMPLATE" "$SITES_D_FILE"
+else
+    echo "$SITES_D_FILE already exists; re-applying ownership + prompted values."
     run chmod 0640 "$SITES_D_FILE"
     run chown root:docker "$SITES_D_FILE"
-else
-    install_file 0640 root deploy "$SITE_TEMPLATE" "$SITES_D_FILE"
-    # Pre-populate the values we asked for so the operator only has to fill
-    # in secrets in $EDITOR.
-    sed -i \
-        -e "s|^DOMAIN=.*|DOMAIN=\"$DOMAIN\"|" \
-        -e "s|^ENV_NAME=.*|ENV_NAME=\"$ENV_NAME\"|" \
-        -e "s|^REPO=.*|REPO=\"$REPO\"|" \
-        -e "s|^BRANCH=.*|BRANCH=\"$BRANCH\"|" \
-        -e "s|^COMPOSE_FILE_REL=.*|COMPOSE_FILE_REL=\"$COMPOSE_FILE_REL\"|" \
-        "$SITES_D_FILE"
 fi
+# Always re-apply the prompt values via sed — if the file already has the
+# operator's answers, this is a no-op; if a previous run died before sed
+# (e.g. an early chown failure that left the file as a raw template),
+# this repairs it. CF tokens, OAuth secrets, and any other manual edits
+# the operator made to other lines are preserved untouched.
+sed -i \
+    -e "s|^DOMAIN=.*|DOMAIN=\"$DOMAIN\"|" \
+    -e "s|^ENV_NAME=.*|ENV_NAME=\"$ENV_NAME\"|" \
+    -e "s|^REPO=.*|REPO=\"$REPO\"|" \
+    -e "s|^BRANCH=.*|BRANCH=\"$BRANCH\"|" \
+    -e "s|^COMPOSE_FILE_REL=.*|COMPOSE_FILE_REL=\"$COMPOSE_FILE_REL\"|" \
+    "$SITES_D_FILE"
 echo "Opening \$EDITOR ($EDITOR) — fill in CF_API_TOKEN / CF_ZONE_ID if you want CF cache purge."
 confirm "Open $SITES_D_FILE in $EDITOR now?" && run "$EDITOR" "$SITES_D_FILE"
 
