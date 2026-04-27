@@ -92,6 +92,17 @@ YQ_IMAGE="${YQ_IMAGE:-mikefarah/yq:4}"
 COSIGN_IDENTITY_REGEX='^https://github\.com/den-frie-vilje/[^/]+/\.github/workflows/build-and-sign\.yml@refs/heads/(main|staging)$'
 COSIGN_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 
+# Which images in a compose file we cosign-verify, by image-ref regex.
+# Only images we BUILD get signed; upstream images (caddy, nginx,
+# sveltia-auth, etc.) are not signed by their authors and can't pass
+# this gate. They're trusted via the @sha256:<digest> pin in the compose
+# file — that's a different supply-chain anchor (registry digest
+# immutability) than cosign provides (provenance attestation).
+#
+# Default: only images under our own GHCR namespace. Override via env
+# var if you publish to a different registry/namespace.
+COSIGN_REQUIRE_REGEX="${COSIGN_REQUIRE_REGEX:-^ghcr\.io/den-frie-vilje/}"
+
 # Optional CLI filter
 FILTER_DOMAIN="${1:-}"
 FILTER_ENV="${2:-}"
@@ -320,10 +331,16 @@ deploy_site() {
         return 1
     fi
 
-    # ─── Verify all images ────────────────────────────────────────────────
-    # Done BEFORE the docker compose pull so a verification failure aborts
-    # without ever pulling unverified bytes onto the host.
-    local images verify_failed=0
+    # ─── Verify in-scope images ───────────────────────────────────────────
+    # Cosign-verify only images matching $COSIGN_REQUIRE_REGEX (defaults to
+    # ^ghcr\.io/den-frie-vilje/). Upstream images (caddy, sveltia-auth,
+    # etc.) skip the cosign gate — they're not signed by their authors and
+    # are trusted via the @sha256:<digest> pin in the compose file
+    # instead.
+    #
+    # Done BEFORE `docker compose pull` so a verification failure aborts
+    # without pulling unverified bytes onto the host.
+    local images verify_failed=0 verified_count=0 skipped_count=0
     if ! images=$(compose_images "$compose_file"); then
         err "[$project] failed to parse compose file"
         return 1
@@ -334,14 +351,29 @@ deploy_site() {
     fi
 
     while IFS= read -r img; do
-        if ! cosign_verify "$img"; then
+        if [[ ! "$img" =~ $COSIGN_REQUIRE_REGEX ]]; then
+            log "[$project]   skipping signature check (out-of-scope upstream image): $img"
+            skipped_count=$((skipped_count + 1))
+            continue
+        fi
+        if cosign_verify "$img"; then
+            log "[$project]   signature verified: $img"
+            verified_count=$((verified_count + 1))
+        else
             err "[$project]   signature verification FAILED: $img"
             verify_failed=1
         fi
     done <<< "$images"
 
+    log "[$project]   image gate: $verified_count verified, $skipped_count skipped (upstream)"
+
     if [ "$verify_failed" -ne 0 ]; then
-        err "[$project] aborting deploy — one or more images failed cosign verification"
+        err "[$project] aborting deploy — one or more in-scope images failed cosign verification"
+        return 1
+    fi
+
+    if [ "$verified_count" -eq 0 ] && [ "$skipped_count" -gt 0 ]; then
+        err "[$project] no in-scope images in this compose file — at least one image matching $COSIGN_REQUIRE_REGEX is required"
         return 1
     fi
 
