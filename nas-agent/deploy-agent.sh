@@ -402,15 +402,24 @@ deploy_site() {
         return 1
     fi
 
-    local target_id running_container running_id=""
-    target_id=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" images --quiet "$SITE_SERVICE" 2>/dev/null | head -1)
+    # Format gotcha: `docker compose images --quiet` returns the SHORT
+    # image ID (`5849d7c4e25f`) while `docker inspect --format '{{.Image}}'`
+    # returns the FULL prefixed form (`sha256:5849d7c4e25f…`). Comparing
+    # them as strings always says "differ" → unconditional restart on
+    # every fire. Normalize both to the full prefixed form by piping the
+    # short ID through `docker image inspect --format '{{.Id}}'`.
+    local target_id="" target_short running_container running_id=""
+    target_short=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" images --quiet "$SITE_SERVICE" 2>/dev/null | head -1)
+    if [ -n "$target_short" ]; then
+        target_id=$(docker image inspect --format '{{.Id}}' "$target_short" 2>/dev/null || echo "")
+    fi
     running_container=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" ps --quiet "$SITE_SERVICE" 2>/dev/null | head -1)
     if [ -n "$running_container" ]; then
         running_id=$(docker inspect --format '{{.Image}}' "$running_container" 2>/dev/null || echo "")
     fi
 
-    if [ -n "$running_id" ] && [ "$running_id" = "$target_id" ]; then
-        log "[$project]   no change — site container already on target image (${target_id:0:19}…)"
+    if [ -n "$running_id" ] && [ -n "$target_id" ] && [ "$running_id" = "$target_id" ]; then
+        log "[$project]   no change — site container already on target image (${target_id:7:19}…)"
         return 0
     fi
 
