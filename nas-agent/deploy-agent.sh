@@ -336,25 +336,21 @@ deploy_site() {
     fi
 
     # ─── Detect change ────────────────────────────────────────────────────
-    # Pull first, compare what's RUNNING (the live container's image ID,
-    # per `docker inspect`) to what the compose file resolves to (the
-    # post-pull local image ID for the site service). Match AND a
-    # container is running ⇒ no-op exit. Cosign verify is deferred until
-    # we actually have something to deploy — there's no value in
-    # re-verifying an image that's already running (we verified it when
-    # we deployed it, and content-addressed image IDs can't change
-    # without changing the ID).
+    # Pull first, then compare what's RUNNING (the live container's
+    # image ID, per `docker inspect`) to what the compose file's image:
+    # ref currently resolves to LOCALLY (after pull). Match AND a
+    # container is running ⇒ no-op exit. Cosign verify is deferred
+    # until we actually have something to deploy.
     #
-    # Pulling unverified bytes onto disk (briefly, until the next
-    # `docker image prune`) is the trade for skipping cosign on the
-    # ~95% of fires that have nothing to do. The bytes are never
-    # executed without cosign verify happening first.
-    #
-    # Format gotcha: `docker compose images --quiet` returns the SHORT
-    # image ID (`5849d7c4e25f`) while `docker inspect --format '{{.Image}}'`
-    # returns the FULL prefixed form (`sha256:5849d7c4e25f…`). Normalize
-    # both to the full prefixed form by piping the short ID through
-    # `docker image inspect --format '{{.Id}}'`.
+    # Why we read the image ref via `docker compose config` + yq, NOT
+    # via `docker compose images -q <service>`: the latter returns the
+    # image of the CURRENTLY RUNNING container, not the image the
+    # compose file would deploy. So `images -q` and `inspect <container>`
+    # both return the same value, change detection always reports
+    # "no change," and the agent never picks up new builds. (Found the
+    # hard way 2026-04-27.) The `compose config` path resolves env-var
+    # substitutions, so it works even for sites whose image: line
+    # references ${VAR}.
     local compose_args=(-p "$project" -f "$compose_file")
     [ -f "$env_file" ] && compose_args+=(--env-file "$env_file")
 
@@ -363,10 +359,13 @@ deploy_site() {
         return 1
     fi
 
-    local target_id="" target_short running_container running_id=""
-    target_short=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" images --quiet "$SITE_SERVICE" 2>/dev/null | head -1)
-    if [ -n "$target_short" ]; then
-        target_id=$(docker image inspect --format '{{.Id}}' "$target_short" 2>/dev/null || echo "")
+    local target_id="" target_ref running_container running_id=""
+    # Resolve the site service's image: ref (env-vars substituted).
+    target_ref=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" config 2>/dev/null \
+        | docker run --rm -i "$YQ_IMAGE" ".services.\"$SITE_SERVICE\".image" 2>/dev/null \
+        | grep -v '^null$' | head -1)
+    if [ -n "$target_ref" ]; then
+        target_id=$(docker image inspect --format '{{.Id}}' "$target_ref" 2>/dev/null || echo "")
     fi
     running_container=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" ps --quiet "$SITE_SERVICE" 2>/dev/null | head -1)
     if [ -n "$running_container" ]; then
