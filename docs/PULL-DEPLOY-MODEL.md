@@ -199,7 +199,35 @@ DSM minor-version updates per Synology's developer documentation, and they
 sit outside the `/volume1/docker/` backup tree. Use this only if you accept
 re-installing after each DSM update.
 
-### 7. Smoke-test
+### 7. Make GHCR signature artifacts public (per-image, one-time)
+
+When CI signs an image with `cosign sign`, the signature lands in GHCR
+as a *separate* OCI artifact (tagged `sha256-<digest>.sig` against the
+same image repository). [GitHub Packages](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
+defaults every newly-published package to **private**, even when the
+parent image is public. The agent on the NAS pulls signatures
+anonymously, so a private signature artifact returns HTTP 401 and the
+agent reports `signature verification FAILED: no signatures found`.
+
+Make the package public **once** per image (not per-deploy):
+
+> GitHub → org `den-frie-vilje` → Packages → `<image-name>` → Package
+> settings → Danger Zone → Change visibility → **Public** → confirm
+
+This step cannot be scripted. The GitHub REST API exposes only
+`list/get/delete/restore` for packages — no `PATCH visibility`
+endpoint — and `gh` CLI has no `package` subcommand for this
+([cli/cli#6820](https://github.com/cli/cli/issues/6820), open since
+2022). Settings GUI is the only path.
+
+After flipping visibility, anonymous `cosign verify` succeeds and the
+agent can deploy. Re-run the agent manually to confirm:
+
+```sh
+sudo -u deploy /volume1/docker/nas-sites/deploy-agent.sh <domain> <env>
+```
+
+### 8. Smoke-test
 
 ```sh
 # As the operator (sudo to run as deploy):
@@ -493,6 +521,16 @@ nothing surprises an operator who hasn't read the script.
 
 Cosign refused to validate one or more images. Possible causes:
 
+- **The signature artifact is private on GHCR** — the most common
+  cause on first deploy of a new image. `cosign verify` reports
+  "no signatures found" because the anonymous fetch of the
+  `sha256-<digest>.sig` tag returns HTTP 401. Fix: make the package
+  public per [§7](#7-make-ghcr-signature-artifacts-public-per-image-one-time)
+  of the bootstrap. Diagnose with:
+  ```sh
+  curl -sSI 'https://ghcr.io/v2/den-frie-vilje/<image>/manifests/sha256-<digest>.sig'
+  # 401 → package is private; 404 → never pushed; 200 → readable
+  ```
 - The image was never signed (CI ran a workflow other than
   `build-and-sign.yml`). Confirm the site's caller workflow points at
   `build-and-sign.yml` and re-trigger a build.
