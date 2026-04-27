@@ -79,7 +79,11 @@ LOCK_DIR="${LOCK_DIR:-/tmp/nas-sites-deploy}"
 # Pinned tool images. Bumped via PR + operator re-cp of this script (no
 # auto-update). cosign at v2.4 is the current stable line as of 2026-04;
 # yq v4 is the current major.
-COSIGN_IMAGE="${COSIGN_IMAGE:-ghcr.io/sigstore/cosign/cosign:v2.4.1}"
+# cosign v3.x: default signature storage is OCI 1.1 referrer artifacts
+# + the new protobuf bundle format (per cosign v3.0 CHANGELOG). Must
+# match the cosign version used by .github/workflows/build-and-sign.yml
+# in nas-sites — bump in lockstep with the cosign-release input there.
+COSIGN_IMAGE="${COSIGN_IMAGE:-ghcr.io/sigstore/cosign/cosign:v3.0.6}"
 YQ_IMAGE="${YQ_IMAGE:-mikefarah/yq:4}"
 
 # Cosign keyless verification parameters. Identity regex matches our CI

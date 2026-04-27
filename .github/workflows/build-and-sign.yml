@@ -144,7 +144,15 @@ jobs:
         # SHA-pinned to v4.1.1. cosign-installer does NOT publish a
         # floating @v4 tag (only @v4.0.0, @v4.1.0, @v4.1.1) — verify
         # before bumping.
+        # cosign-release pinned explicitly: cosign v3.x changed the
+        # default signature storage to OCI 1.1 referrers + the new
+        # protobuf bundle format (per CHANGELOG.md for v3.0.0). The
+        # NAS-side agent must use the same major to verify what we
+        # sign here. Bump in lockstep with COSIGN_IMAGE in
+        # nas-agent/deploy-agent.sh.
         uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003
+        with:
+          cosign-release: v3.0.6
 
       - name: Sign image (keyless, by digest)
         # Sign by DIGEST, not by tag. Signing the immutable tag would
