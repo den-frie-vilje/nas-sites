@@ -79,6 +79,43 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # Need full git history for gitleaks to scan past
+          # commits, not just HEAD. Adds a few seconds to
+          # checkout but catches secrets that landed in any
+          # ancestor commit (the threat model for repository
+          # leaks: the secret only has to ship ONCE in any
+          # commit accessible from the branch).
+          fetch-depth: 0
+
+      - name: gitleaks — scan source for committed secrets (Phase 6 / H4)
+        # Replaces an earlier bespoke `grep -E` against the built
+        # image filesystem (4 hardcoded patterns + private-key
+        # headers). gitleaks ships ~150+ ruleset entries
+        # maintained by the wider community — JWT shapes, AWS
+        # access keys, Stripe / GitHub / GitLab tokens, npm
+        # tokens, Slack webhooks, etc. — and scans the GIT
+        # HISTORY (not just the checked-out HEAD), so a secret
+        # that leaked into an ancestor commit is still caught
+        # even if a later commit removed it.
+        #
+        # Pinned by manifest-index digest (Phase 5 / H2 + L1
+        # discipline — every third-party image we run is locked
+        # to specific bytes; bumps land via dependabot's docker
+        # ecosystem in the npm/docker/github-actions group
+        # rotation).
+        #
+        # Flags: --redact truncates secret values in the output
+        # so CI logs never echo a leaked secret in plaintext;
+        # --no-banner skips the ASCII banner.
+        #
+        # Non-zero exit → step fails → workflow stops before
+        # build/push/deploy → secret never enters the registry.
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/repo:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            detect --source /repo --no-banner --redact
 
       - name: Generate image tags
         id: tags
@@ -132,35 +169,6 @@ jobs:
           # auto-scoped to the workflow ref by default.
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Paranoia — no secrets in the image
-        # Scan the image filesystem for value-assignment patterns
-        # that look like leaked secrets, and for private-key
-        # headers. Matches on KEY=value shape, not bare names, so
-        # comments/docs that mention a variable name don't trigger
-        # false positives.
-        #
-        # Note: we only pull + scan the amd64 variant (the runner
-        # arch). If the arm64 variant differs in content, our scan
-        # wouldn't catch its leaks — but with multi-stage Dockerfiles
-        # the content is identical across arches, only the binaries
-        # differ.
-        run: |
-          docker pull --platform=linux/amd64 ${{ steps.tags.outputs.immutable }}
-          LEAKED=$(docker run --rm --entrypoint sh --platform=linux/amd64 ${{ steps.tags.outputs.immutable }} -c '
-            # Value-assignment: KEY[=:]value-with-12+-chars.
-            grep -rEn "(GITHUB_TOKEN|(OAUTH_)?CLIENT_SECRET|API_KEY|WEBHOOK_SECRET)[[:space:]]*[=:][[:space:]]*[A-Za-z0-9_/+=-]{12,}" \
-              /usr/share/nginx/html/ /app/ 2>/dev/null
-            # Any private-key header is always a leak.
-            grep -rn "BEGIN OPENSSH PRIVATE KEY\|BEGIN RSA PRIVATE KEY\|BEGIN EC PRIVATE KEY\|BEGIN PRIVATE KEY" \
-              /usr/share/nginx/html/ /app/ 2>/dev/null
-            :
-          ')
-          if [ -n "$LEAKED" ]; then
-            echo "::error::Possible secret leaked into image"
-            echo "$LEAKED"
-            exit 1
-          fi
 
       - name: Trigger NAS deploy webhook
         # HMAC-SHA256 body sign. Header name matches GitHub's own
