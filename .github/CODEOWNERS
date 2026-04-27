@@ -1,0 +1,27 @@
+# CODEOWNERS for nas-sites.
+#
+# GitHub uses this file in combination with the branch-protection setting
+# "Require review from Code Owners" to gate merges to main. Every PR
+# touching a path matched below requires approval from at least one of the
+# listed owners before merge.
+#
+# Owner is currently a single user (`@olekristensen`). If you create
+# org-level teams (e.g. `@den-frie-vilje/maintainers` and
+# `@den-frie-vilje/security`), swap them in here — team review is more
+# resilient to a single person being on leave or unreachable.
+#
+# See docs/BRANCH-PROTECTION.md for the matching branch-protection ruleset.
+
+# Default: any change needs maintainer review.
+*                                       @olekristensen
+
+# Security-critical paths. Changes here can functionally lower the bar to
+# code execution on every NAS. Require security review (which can be the
+# same person, or a separate one — what matters is the explicit step).
+nas-agent/**                            @olekristensen
+tools/**                                @olekristensen
+.github/workflows/**                    @olekristensen
+.github/CODEOWNERS                      @olekristensen
+docs/PULL-DEPLOY-MODEL.md               @olekristensen
+docs/BRANCH-PROTECTION.md               @olekristensen
+docs/SYNOTOOLS-HARDENING.md             @olekristensen

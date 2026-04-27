@@ -33,6 +33,27 @@ The agent is not auto-updated at runtime. Edits to `nas-agent/deploy-agent.sh`
 in this repo only land on the NAS when an operator pulls and re-installs
 them.
 
+### Operator scripts (`tools/`)
+
+Interactive scripts the operator runs by hand on the NAS. Every script
+prints what it's about to do and asks for explicit confirmation at each
+mutating step.
+
+- **[`update-agent.sh`](tools/update-agent.sh)** — pull `nas-sites/main`
+  and re-install the agent. The single most important operator action,
+  run after every upstream agent change.
+- **[`bootstrap-deploy-user.sh`](tools/bootstrap-deploy-user.sh)** — set up
+  the `deploy` user, `docker` group, and socket permissions on a fresh NAS.
+- **[`bootstrap-site.sh`](tools/bootstrap-site.sh)** — add a `(site, env)`
+  pair: dirs, repo clone, env files, agent config.
+- **[`install-boot-tasks.sh`](tools/install-boot-tasks.sh)** — walk
+  through the DSM Task Scheduler GUI clicks needed to persist
+  `docker.sock` ownership across reboots.
+- **[`syno-acme-local-hook/`](tools/syno-acme-local-hook/)** — drop-in
+  `acme.sh` deploy hook that imports renewed certs into DSM via local
+  `synowebapi`, removing the on-disk admin credential the upstream hook
+  needs. See [docs/SYNOTOOLS-HARDENING.md](docs/SYNOTOOLS-HARDENING.md).
+
 ## Architecture
 
 ```

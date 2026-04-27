@@ -53,125 +53,102 @@ where `/run/lock` may be root-only.
 ## One-time bootstrap
 
 These steps run **once per NAS**, by a human operator with `sudo`. They
-cannot be automated from CI — that's the whole point of the new model.
+cannot be automated from CI by design — the operator is the source of
+trust for what the NAS runs.
 
-### 1. Deploy user + docker group
+The mutating steps are encapsulated in interactive scripts under
+[`tools/`](../tools/) — each prints what it's about to do and asks for
+explicit confirmation before each change. Run them by hand from a root
+shell on the NAS.
 
-The agent runs as a non-root `deploy` user with docker-socket access via
-the `docker` group. **Important caveat**: docker-socket access is
-functionally root-equivalent (any UID with read+write to the socket can
-launch a privileged container that mounts `/`). Running as `deploy` is
-defense-in-depth — see the §Security model section for the full reasoning.
-
-```sh
-# Create the deploy user (skip if already present from previous bootstrap).
-sudo synouser --add deploy "" "nas-sites deploy agent" 0 "" 0
-# Lock interactive login — this user only runs the agent + git operations.
-sudo synouser --setpw deploy '!'
-
-# Create the docker group (Container Manager may have done this; idempotent).
-sudo synogroup --add docker || true
-sudo synogroup --member docker deploy
-
-# Apply group ownership to the docker socket. Note: Container Manager
-# RESETS this on every restart and on every reboot. The boot-up Task
-# Scheduler job in step 6 below re-applies it — without that, the agent
-# starts failing closed with "docker daemon unreachable" after a reboot.
-sudo chown root:docker /var/run/docker.sock
-sudo chmod 660 /var/run/docker.sock
-```
-
-### 2. Clone nas-sites
+### 1. Clone nas-sites onto the NAS
 
 ```sh
 sudo mkdir -p /volume1/docker/nas-sites
 sudo git clone --depth 1 \
     https://github.com/den-frie-vilje/nas-sites.git \
     /volume1/docker/nas-sites/repo
-sudo chown -R deploy:users /volume1/docker/nas-sites/repo
 ```
 
-This clone is for human reference and as the source-of-truth for
-operator-driven updates of the agent script. The agent itself **does not
-read from this clone at runtime** — that distinction is the security fix.
+This clone is for the operator: source of truth for the tools and the
+agent script. **The agent itself does not read from this clone at
+runtime** — that separation is what keeps `nas-sites/main` push access
+from being equivalent to root on the NAS. Updates land on the NAS only
+when an operator runs `tools/update-agent.sh`.
+
+### 2. Deploy user + docker group + socket permissions
+
+```sh
+sudo /volume1/docker/nas-sites/repo/tools/bootstrap-deploy-user.sh
+```
+
+This walks through:
+
+- creating the `deploy` user with locked password;
+- creating the `docker` group (if absent);
+- adding `deploy` to `docker` (correctly preserving any existing members
+  — `synogroup --member` REPLACES the member list rather than appending,
+  so the script reads the current members first);
+- `chown root:docker /var/run/docker.sock && chmod 660`;
+- a verification that `sudo -u deploy docker info` works.
+
+**Important caveat**: docker-socket access is functionally root-equivalent
+— any UID with read+write to the socket can launch a privileged container
+that mounts `/`. Running as `deploy` is defense in depth, not blast-radius
+reduction. See the §Security model section.
 
 ### 3. Install the agent
 
 ```sh
-sudo install -m 0755 -o root -g root \
-    /volume1/docker/nas-sites/repo/nas-agent/deploy-agent.sh \
-    /volume1/docker/nas-sites/deploy-agent.sh
+sudo /volume1/docker/nas-sites/repo/tools/update-agent.sh
 ```
 
-Owner is `root:root` — `deploy` can execute, cannot rewrite. Updates
-require operator sudo. Whenever the upstream agent script changes (PR
-merged to `nas-sites/main`), re-run this one command.
+Same script you'll run after every upstream agent update. First time
+through it does the initial install; subsequent runs show the diff and
+ask for confirmation before applying.
 
-### 4. Add a site config
+The installed file is owned `root:root 0755` — `deploy` can execute it,
+cannot rewrite it. The only way to change what runs is operator sudo.
+
+### 4. Persist the docker.sock ownership across reboots
 
 ```sh
-sudo mkdir -p /volume1/docker/nas-sites/sites.d
-sudo install -m 0640 -o root -g deploy \
-    /volume1/docker/nas-sites/repo/nas-agent/sites.env.example \
-    /volume1/docker/nas-sites/sites.d/example.com.staging.env
-sudo $EDITOR /volume1/docker/nas-sites/sites.d/example.com.staging.env
+sudo /volume1/docker/nas-sites/repo/tools/install-boot-tasks.sh
 ```
 
-Repeat per `(domain, env)` pair. Filenames are conventional; the agent
-reads `DOMAIN` and `ENV_NAME` from the file contents, not from the filename.
+Walks the operator through the DSM Task Scheduler GUI clicks needed for a
+"Triggered Task" on event Boot-up that re-applies the socket chown.
+Container Manager resets the socket to `root:root 660` on every reboot
+and on every package restart; without this task, the agent fails closed
+on every boot until you re-apply ownership by hand.
 
-### 5. Bootstrap the per-site repo clone + stack dir
+(The script doesn't drive Task Scheduler over `synowebapi` — the
+EventScheduler create payload is undocumented and brittle. The GUI path is
+boring, well-supported, and the entry persists across DSM updates.)
 
-The agent expects each site's repo to already be cloned and each env's
-stack dir to already exist. It will not auto-clone — initial setup wants
-human attention (auth for private repos, deciding the directory layout,
-seeding the stack-level env file with secrets).
+### 5. Bootstrap the first site
 
 ```sh
-DOMAIN=example.com
-ENV=staging   # repeat for production
-
-sudo mkdir -p /volume1/docker/$DOMAIN/$ENV
-sudo git clone --depth 1 -b $ENV \
-    https://github.com/den-frie-vilje/$DOMAIN.git \
-    /volume1/docker/$DOMAIN/repo
-sudo chown -R deploy:users /volume1/docker/$DOMAIN
-
-# Per-stack env file consumed by the compose file's ${VAR} interpolation.
-# This is separate from sites.d/<...>.env, which the agent itself reads.
-sudo install -m 0640 -o root -g deploy /dev/null \
-    /volume1/docker/$DOMAIN/$ENV/$ENV.env
-sudo $EDITOR /volume1/docker/$DOMAIN/$ENV/$ENV.env
+sudo /volume1/docker/nas-sites/repo/tools/bootstrap-site.sh
 ```
 
-### 6. Boot-up task: re-apply docker socket group ownership
+Prompts for domain, environment (`staging` or `production`), repo,
+branch, compose file path. Then:
 
-Container Manager resets `/var/run/docker.sock` to `root:root 660` on every
-NAS reboot and on every Container Manager package restart, which locks
-`deploy` out of the docker daemon until the next operator intervention. A
-DSM Task Scheduler "Triggered Task" with trigger "Boot-up" handles this
-automatically.
+- creates `/volume1/docker/<domain>/{repo,<env>}/` owned `deploy:users`;
+- `git clone`s the site repo at the chosen branch (skips if already
+  cloned);
+- creates the per-stack `<env>.env` (root:deploy 0640) and opens
+  `$EDITOR` for compose-time secrets (`CADDY_PORT`, OAuth IDs, etc.);
+- copies `nas-agent/sites.env.example` into
+  `/volume1/docker/nas-sites/sites.d/<domain>.<env>.env` (root:deploy
+  0640), pre-fills the values you typed, opens `$EDITOR` for `CF_API_TOKEN`
+  / `CF_ZONE_ID`;
+- offers to run a one-off agent fire as a smoke test.
 
-1. Control Panel → Task Scheduler → Create → Triggered Task → User-defined script
-2. **General** tab:
-   - Task: `docker-socket-deploy-group`
-   - User: `root`
-   - Event: `Boot-up`
-   - Enabled: yes
-3. **Task Settings** tab:
-   - Run command:
-     ```sh
-     chown root:docker /var/run/docker.sock && chmod 660 /var/run/docker.sock
-     ```
-4. Save.
+Run twice per new site (once for staging, once for production).
 
-There is a brief window after boot (typically <30 s) where Container
-Manager has started but this task hasn't fired yet. The agent fails closed
-during that window with `docker daemon unreachable as deploy` — annoying
-but safe; the next 5-min agent fire after the boot-up task lands will
-succeed.
-
-### 7. Schedule the agent
+### 6. Schedule the agent
 
 Two options. Pick one. **DSM Task Scheduler is recommended on Synology.**
 
@@ -222,7 +199,7 @@ DSM minor-version updates per Synology's developer documentation, and they
 sit outside the `/volume1/docker/` backup tree. Use this only if you accept
 re-installing after each DSM update.
 
-### 8. Smoke-test
+### 7. Smoke-test
 
 ```sh
 # As the operator (sudo to run as deploy):
@@ -396,6 +373,93 @@ clear error pointing at the likely causes. Common reasons:
   intentionally no-ops on unchanged digests.
 - **Site doesn't expose `verify-pattern`** — grep the live response by
   hand to confirm.
+
+## Image references in compose files: tag vs. digest
+
+The agent accepts both forms. The choice is per-(site, env) and lives in
+the site repo's compose file.
+
+### Rolling tag — fast iteration, small TOCTOU window
+
+```yaml
+services:
+  site:
+    image: ghcr.io/den-frie-vilje/example-site:staging-latest
+```
+
+CI rebuilds, pushes, signs. The tag moves to the new digest. The agent's
+next fire pulls the moving tag, cosign-verifies whatever the tag now
+points at, and deploys.
+
+- **Latency**: deploy lands within one agent fire (≤ 5 min default).
+- **Risk**: there is a brief window — milliseconds, in practice — between
+  the agent's `cosign verify` (which resolves the tag → digest at
+  verification time) and `docker compose pull` (which resolves it again).
+  An attacker with GHCR write access could in theory move the tag in
+  that window. The cosign identity check still applies to whatever
+  `docker compose pull` ends up resolving, so the attacker would also
+  need to produce a valid signature for the substituted digest.
+- **Right for**: staging, internal tools, any site where deploy latency
+  matters more than end-to-end reproducibility.
+
+### Pinned digest — strict, PR-driven
+
+```yaml
+services:
+  site:
+    image: ghcr.io/den-frie-vilje/example-site@sha256:0123456789abcdef…
+```
+
+The compose file names the exact bytes to deploy. Updates require a PR
+that changes the digest line. The agent's `cosign verify` and
+`docker compose pull` both resolve to the literal digest — no TOCTOU
+window at all.
+
+- **Latency**: same as a normal merge cycle. CI builds + signs the new
+  image; a PR updates the compose file's digest; merge; agent picks up
+  the change on its next fire.
+- **Win**: every deployed digest is auditable in `git log compose.production.yml`
+  and was reviewed before landing. Re-running an arbitrarily old deploy
+  is `git checkout <commit> -- compose.production.yml`.
+- **Right for**: production. Especially worth it for sites where the
+  threat model includes "GHCR credential compromise" as a real concern.
+
+### How to discover the digest after a build
+
+The `build-and-sign.yml` workflow's job summary prints the digest of
+every push:
+
+```
+- Image tag (immutable): staging-2026-04-27T10-14-22Z-abc12345
+- Image tag (moving): staging-latest
+- Digest: sha256:0123456789abcdef…
+```
+
+For a PR-driven digest bump:
+
+```sh
+# In the site repo, after a CI run for the new build:
+gh run view <run-id> --log | grep '^- Digest:'
+# Or pull the digest from the registry directly:
+docker manifest inspect ghcr.io/den-frie-vilje/<site>:production-latest \
+    | jq -r '.config.digest'
+```
+
+Then edit `deploy/compose.production.yml`, commit, open a PR. The PR
+diff is exactly the digest change, which is the artifact your reviewer
+approves.
+
+### Roadmap: auto-PR for production digest bumps
+
+Manual PR-per-deploy is fine for low-frequency production releases. If
+the cadence picks up, a follow-up reusable workflow can do this
+automatically: after `build-and-sign.yml` succeeds on `main`, open a PR
+against `compose.production.yml` updating the digest. The PR still
+requires review (per branch protection), so the operator is still in the
+loop — they just don't have to type the digest by hand.
+
+This is currently **not implemented** — listed in the repo README's
+roadmap. Open if/when it's wanted.
 
 ## Synology / DSM constraints encoded in the agent
 
