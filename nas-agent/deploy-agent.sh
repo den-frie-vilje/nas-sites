@@ -335,15 +335,61 @@ deploy_site() {
         return 1
     fi
 
-    # ─── Verify in-scope images ───────────────────────────────────────────
+    # ─── Detect change ────────────────────────────────────────────────────
+    # Pull first, compare what's RUNNING (the live container's image ID,
+    # per `docker inspect`) to what the compose file resolves to (the
+    # post-pull local image ID for the site service). Match AND a
+    # container is running ⇒ no-op exit. Cosign verify is deferred until
+    # we actually have something to deploy — there's no value in
+    # re-verifying an image that's already running (we verified it when
+    # we deployed it, and content-addressed image IDs can't change
+    # without changing the ID).
+    #
+    # Pulling unverified bytes onto disk (briefly, until the next
+    # `docker image prune`) is the trade for skipping cosign on the
+    # ~95% of fires that have nothing to do. The bytes are never
+    # executed without cosign verify happening first.
+    #
+    # Format gotcha: `docker compose images --quiet` returns the SHORT
+    # image ID (`5849d7c4e25f`) while `docker inspect --format '{{.Image}}'`
+    # returns the FULL prefixed form (`sha256:5849d7c4e25f…`). Normalize
+    # both to the full prefixed form by piping the short ID through
+    # `docker image inspect --format '{{.Id}}'`.
+    local compose_args=(-p "$project" -f "$compose_file")
+    [ -f "$env_file" ] && compose_args+=(--env-file "$env_file")
+
+    if ! "${DOCKER_COMPOSE[@]}" "${compose_args[@]}" pull --quiet 2>&1 | sed "s/^/[$project]   pull: /"; then
+        err "[$project] docker compose pull failed"
+        return 1
+    fi
+
+    local target_id="" target_short running_container running_id=""
+    target_short=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" images --quiet "$SITE_SERVICE" 2>/dev/null | head -1)
+    if [ -n "$target_short" ]; then
+        target_id=$(docker image inspect --format '{{.Id}}' "$target_short" 2>/dev/null || echo "")
+    fi
+    running_container=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" ps --quiet "$SITE_SERVICE" 2>/dev/null | head -1)
+    if [ -n "$running_container" ]; then
+        running_id=$(docker inspect --format '{{.Image}}' "$running_container" 2>/dev/null || echo "")
+    fi
+
+    if [ -n "$running_id" ] && [ -n "$target_id" ] && [ "$running_id" = "$target_id" ]; then
+        log "[$project] no change — site already on ${target_id:7:19}…"
+        return 0
+    fi
+
+    # ─── Deploying — verify signatures of in-scope images first ───────────
     # Cosign-verify only images matching $COSIGN_REQUIRE_REGEX (defaults to
     # ^ghcr\.io/den-frie-vilje/). Upstream images (caddy, sveltia-auth,
     # etc.) skip the cosign gate — they're not signed by their authors and
     # are trusted via the @sha256:<digest> pin in the compose file
     # instead.
-    #
-    # Done BEFORE `docker compose pull` so a verification failure aborts
-    # without pulling unverified bytes onto the host.
+    if [ -z "$running_container" ]; then
+        log "[$project] deploying — no running site container"
+    else
+        log "[$project] deploying — running ${running_id:7:19}… → target ${target_id:7:19}…"
+    fi
+
     local images verify_failed=0 verified_count=0 skipped_count=0
     if ! images=$(compose_images "$compose_file"); then
         err "[$project] failed to parse compose file"
@@ -379,54 +425,6 @@ deploy_site() {
     if [ "$verified_count" -eq 0 ] && [ "$skipped_count" -gt 0 ]; then
         err "[$project] no in-scope images in this compose file — at least one image matching $COSIGN_REQUIRE_REGEX is required"
         return 1
-    fi
-
-    # ─── Detect change ────────────────────────────────────────────────────
-    # Pull the latest images, then compare what's RUNNING (the live
-    # container's image ID, per `docker inspect`) to what the compose
-    # file resolves to (the post-pull local image ID for the site
-    # service). Mismatch ⇒ deploy. If they match AND a container is
-    # actually running, this fire is a no-op.
-    #
-    # Why not "compare image IDs before vs after pull": that only catches
-    # "did this fire bring in new bytes." It misses the common case of
-    # a previous fire pulling the new image but failing to deploy it
-    # (e.g. cosign verify failed before, then started passing) — the
-    # local cache is up to date, but the running container is stale.
-    # Comparing running-vs-target is the correct invariant.
-    local compose_args=(-p "$project" -f "$compose_file")
-    [ -f "$env_file" ] && compose_args+=(--env-file "$env_file")
-
-    if ! "${DOCKER_COMPOSE[@]}" "${compose_args[@]}" pull --quiet 2>&1 | sed "s/^/[$project]   pull: /"; then
-        err "[$project] docker compose pull failed"
-        return 1
-    fi
-
-    # Format gotcha: `docker compose images --quiet` returns the SHORT
-    # image ID (`5849d7c4e25f`) while `docker inspect --format '{{.Image}}'`
-    # returns the FULL prefixed form (`sha256:5849d7c4e25f…`). Comparing
-    # them as strings always says "differ" → unconditional restart on
-    # every fire. Normalize both to the full prefixed form by piping the
-    # short ID through `docker image inspect --format '{{.Id}}'`.
-    local target_id="" target_short running_container running_id=""
-    target_short=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" images --quiet "$SITE_SERVICE" 2>/dev/null | head -1)
-    if [ -n "$target_short" ]; then
-        target_id=$(docker image inspect --format '{{.Id}}' "$target_short" 2>/dev/null || echo "")
-    fi
-    running_container=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" ps --quiet "$SITE_SERVICE" 2>/dev/null | head -1)
-    if [ -n "$running_container" ]; then
-        running_id=$(docker inspect --format '{{.Image}}' "$running_container" 2>/dev/null || echo "")
-    fi
-
-    if [ -n "$running_id" ] && [ -n "$target_id" ] && [ "$running_id" = "$target_id" ]; then
-        log "[$project]   no change — site container already on target image (${target_id:7:19}…)"
-        return 0
-    fi
-
-    if [ -z "$running_container" ]; then
-        log "[$project]   deploying — no running site container"
-    else
-        log "[$project]   deploying — running ${running_id:0:19}… → target ${target_id:0:19}…"
     fi
 
     # ─── Deploy ───────────────────────────────────────────────────────────
