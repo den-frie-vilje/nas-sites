@@ -45,6 +45,55 @@ require_tools() {
     fi
 }
 
+# Refuse to run unless the `deploy` user has read+write access to the given
+# path (defaults to /volume1/docker). The agent + bootstrap scripts assume
+# deploy access is granted via Synology ACL on /volume1/docker (DSM Control
+# Panel → Shared Folder → docker → Edit → Permissions → Enable Windows ACL
+# + grant deploy Read/Write). If that's not in place, fail loudly with
+# diagnostic output rather than discovering it half-way through a deploy
+# with confusing chown errors.
+require_deploy_can_write() {
+    local target="${1:-/volume1/docker}"
+
+    if ! synouser --get deploy > /dev/null 2>&1; then
+        echo "ERROR: 'deploy' user does not exist." >&2
+        echo "       Run tools/bootstrap-deploy-user.sh first." >&2
+        exit 2
+    fi
+
+    if [ ! -e "$target" ]; then
+        echo "ERROR: $target does not exist." >&2
+        exit 2
+    fi
+
+    if sudo -u deploy test -w "$target" && sudo -u deploy test -r "$target"; then
+        return 0
+    fi
+
+    {
+        echo "ERROR: 'deploy' user cannot read+write $target"
+        echo
+        echo "This usually means one of:"
+        echo "  1. ACLs are enabled on $target but 'deploy' is not granted access."
+        echo "     Fix in DSM: Control Panel → Shared Folder → docker → Edit"
+        echo "                 → Permissions tab → add user 'deploy' with Read/Write."
+        echo "  2. ACLs are NOT enabled on $target and Unix ownership excludes deploy."
+        echo "     Fix in DSM: same path; check 'Enable Windows ACL'."
+        echo "                 OR shell: sudo chown -R deploy:users $target"
+        echo "  3. Container Manager just restarted and reset some permissions."
+        echo "     Re-run the boot-up Task Scheduler job manually:"
+        echo "                 sudo chown root:docker /var/run/docker.sock"
+        echo "                 sudo chmod 660 /var/run/docker.sock"
+        echo
+        echo "Diagnostic snapshot:"
+        echo "  Path:      $target"
+        echo "  Unix:      $(stat -c 'owner=%U:%G mode=%a' "$target" 2>/dev/null || echo unknown)"
+        echo "  ACL state: $(synoacltool --get "$target" 2>&1 | head -3 | tr '\n' '|')"
+        echo "  As deploy: $(sudo -u deploy ls -ld "$target" 2>&1 | head -1)"
+    } >&2
+    exit 2
+}
+
 # Print a section heading in the operator's terminal.
 heading() {
     printf '\n\033[1;36m=== %s ===\033[0m\n' "$*"

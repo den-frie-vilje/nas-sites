@@ -26,17 +26,36 @@ require_dsm
 require_root
 require_tools awk tr sort grep synouser synogroup chown chmod
 
-heading "Bootstrap: deploy user + docker group + socket permissions"
+heading "Bootstrap: deploy user + groups + socket permissions"
 plan "create user 'deploy' (locked password)"
+plan "create group 'deploy' (used for read-only access to agent secrets)"
 plan "create group 'docker' if absent"
+plan "set 'deploy' group members to {existing members + deploy}"
 plan "set 'docker' group members to {existing members + deploy}"
 plan "chown root:docker /var/run/docker.sock; chmod 660"
 plan "verify 'sudo -u deploy docker info' works"
 
 confirm "Proceed?" || { echo "Aborted by operator."; exit 0; }
 
+# Helper: add USER to GROUP without dropping existing members.
+# `synogroup --member` REPLACES the list; we read existing members from
+# /etc/group, union with the new user, then re-apply the full set.
+# `getent` would be the obvious tool — but it's glibc-only and absent on
+# DSM (BusyBox has no getent applet). awk on /etc/group works on every
+# version of DSM.
+add_user_to_group() {
+    local user="$1" group="$2"
+    local existing new
+    existing=$(awk -F: -v g="$group" '$1 == g {print $4}' /etc/group | tr ',' ' ')
+    new=$(printf '%s %s\n' "$existing" "$user" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')
+    echo "  $group members were: ${existing:-<none>}"
+    echo "  $group members will be: $new"
+    # shellcheck disable=SC2086  # intentional word-splitting of $new
+    run synogroup --member "$group" $new
+}
+
 # ─── 1. deploy user ────────────────────────────────────────────────────────
-heading "1/5 deploy user"
+heading "1/6 deploy user"
 if synouser --get deploy > /dev/null 2>&1; then
     echo "User 'deploy' already exists; skipping create."
 else
@@ -49,36 +68,36 @@ fi
 # field as unusable.
 run synouser --setpw deploy '!'
 
-# ─── 2. docker group ───────────────────────────────────────────────────────
-heading "2/5 docker group"
+# ─── 2. deploy group ───────────────────────────────────────────────────────
+# `synouser --add` does NOT create a same-named group on DSM (the user's
+# primary group is `users` by convention). The agent's secret files
+# (/volume1/docker/nas-sites/sites.d/*.env, per-stack <env>.env) want
+# root:deploy 0640 ownership: root owns so a compromised deploy shell
+# cannot rewrite secrets, deploy GROUP reads so the agent can load them.
+# That requires a `deploy` group to exist and the deploy user to be a
+# member.
+heading "2/6 deploy group"
+if synogroup --get deploy > /dev/null 2>&1; then
+    echo "Group 'deploy' already exists; skipping create."
+else
+    run synogroup --add deploy
+fi
+add_user_to_group deploy deploy
+
+# ─── 3. docker group ───────────────────────────────────────────────────────
+heading "3/6 docker group"
 if synogroup --get docker > /dev/null 2>&1; then
     echo "Group 'docker' already exists; skipping create."
 else
     run synogroup --add docker
 fi
 
-# ─── 3. add deploy to docker group ─────────────────────────────────────────
-heading "3/5 docker group membership"
-# GOTCHA: synogroup --member <group> <users…> REPLACES the member list with
-# the supplied users. To add 'deploy' without dropping existing members, we
-# enumerate the current members from /etc/group and append.
-#
-# /etc/group line format: <name>:<password>:<gid>:<comma-separated-members>
-# Parse field 4 directly with awk — `getent` is glibc-only and is NOT
-# present on stock DSM (BusyBox ships no getent applet).
-existing_members=$(awk -F: '$1 == "docker" {print $4}' /etc/group | tr ',' ' ')
-new_members=$(printf '%s deploy\n' "$existing_members" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')
-echo "Current members of 'docker': ${existing_members:-<none>}"
-echo "After this step:             $new_members"
-if confirm "Apply (this REPLACES the docker group member list)?"; then
-    # shellcheck disable=SC2086  # intentional word-splitting of $new_members
-    run synogroup --member docker $new_members
-else
-    echo "Skipped membership change."
-fi
+# ─── 4. add deploy to docker group ─────────────────────────────────────────
+heading "4/6 docker group membership"
+add_user_to_group deploy docker
 
-# ─── 4. socket ownership ───────────────────────────────────────────────────
-heading "4/5 docker.sock group ownership"
+# ─── 5. socket ownership ───────────────────────────────────────────────────
+heading "5/6 docker.sock group ownership"
 if [ ! -S /var/run/docker.sock ]; then
     echo "WARN: /var/run/docker.sock not present. Container Manager not running?"
     echo "      Start Container Manager from DSM Package Center, then re-run this script."
@@ -90,8 +109,8 @@ echo
 echo "NOTE: Container Manager resets these on every restart and on every reboot."
 echo "      Run tools/install-boot-tasks.sh to persist this via a Triggered Task."
 
-# ─── 5. verify ─────────────────────────────────────────────────────────────
-heading "5/5 verify deploy can reach docker"
+# ─── 6. verify user + groups ───────────────────────────────────────────────
+heading "6/7 verify deploy can reach docker + has deploy group"
 if sudo -u deploy docker info > /dev/null 2>&1; then
     echo "OK — 'sudo -u deploy docker info' succeeded."
 else
@@ -99,8 +118,55 @@ else
     echo "       Check group membership took effect (deploy may need to log out/in)."
     exit 1
 fi
+if sudo -u deploy id -nG | tr ' ' '\n' | grep -qx deploy; then
+    echo "OK — deploy is a member of the 'deploy' group."
+else
+    echo "FAIL — deploy is NOT in the 'deploy' group. Re-check step 2."
+    exit 1
+fi
+
+# ─── 7. /volume1/docker access prerequisite ────────────────────────────────
+# This script can't grant ACLs (synoacltool writes are undocumented +
+# brittle); the operator must set them via DSM. Surface this at the end so
+# they know what's left.
+heading "7/7 deploy access to /volume1/docker (ACL prerequisite for next steps)"
+if sudo -u deploy test -w /volume1/docker && sudo -u deploy test -r /volume1/docker; then
+    echo "OK — deploy can read+write /volume1/docker."
+    echo "     (Whether via Synology ACL or Unix perms, doesn't matter — both work.)"
+    DEPLOY_HAS_DOCKER_ACCESS=1
+else
+    DEPLOY_HAS_DOCKER_ACCESS=0
+    cat <<'EOF'
+
+╭──────────────────────────────────────────────────────────────────╮
+│ ⚠ deploy cannot read+write /volume1/docker yet.                  │
+│                                                                  │
+│ Before running bootstrap-site.sh, grant 'deploy' access to       │
+│ /volume1/docker via Synology ACL:                                │
+│                                                                  │
+│   DSM Control Panel → Shared Folder → docker → Edit              │
+│     → Permissions tab                                            │
+│     → "Enable Windows ACL" should be checked                     │
+│     → Add user 'deploy' with Read/Write                          │
+│     → Apply (let DSM re-apply ACL recursively if asked)          │
+│                                                                  │
+│ Then verify: sudo -u deploy touch /volume1/docker/.deploy-probe  │
+│              sudo -u deploy rm    /volume1/docker/.deploy-probe  │
+│                                                                  │
+│ User/group setup is already complete; no need to re-run this     │
+│ script. Continue with the operator manual after the ACL grant.   │
+╰──────────────────────────────────────────────────────────────────╯
+EOF
+fi
 
 echo
-echo "Bootstrap complete. Next steps:"
-echo "  sudo $SCRIPT_DIR/install-boot-tasks.sh   # persist socket chown across reboots"
-echo "  sudo $SCRIPT_DIR/bootstrap-site.sh       # add the first site"
+echo "Bootstrap complete."
+if [ "$DEPLOY_HAS_DOCKER_ACCESS" = "1" ]; then
+    echo "Next steps:"
+    echo "  sudo $SCRIPT_DIR/install-boot-tasks.sh   # persist socket chown across reboots"
+    echo "  sudo $SCRIPT_DIR/bootstrap-site.sh       # add the first site"
+else
+    echo "BLOCKED on the DSM ACL grant above. Apply it, then continue with"
+    echo "  sudo $SCRIPT_DIR/install-boot-tasks.sh"
+    echo "  sudo $SCRIPT_DIR/bootstrap-site.sh"
+fi
