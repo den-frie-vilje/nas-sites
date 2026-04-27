@@ -193,7 +193,15 @@ docker compose "${COMPOSE_ARGS[@]}" pull site
 # enough between attempts (180s) that any retry happens AFTER
 # this script's own --wait has finished — no concurrent
 # execution.
-docker compose "${COMPOSE_ARGS[@]}" up -d
+#
+# `--wait` (Phase 8 / M3): block until every recreated
+# container reports healthy via its compose healthcheck. If
+# anything in the stack is wedged (e.g. caddy in a crash loop
+# from a bad Caddyfile, sveltia-auth missing OAuth env vars),
+# we surface the failure HERE instead of forging ahead to the
+# force-recreate of `site` and reporting a misleading
+# "site exited (0)" downstream. Fails-fast on a broken stack.
+docker compose "${COMPOSE_ARGS[@]}" up -d --wait
 
 # Second pass: force-recreate the site container specifically.
 # Docker Compose's default up skips recreation when the image
