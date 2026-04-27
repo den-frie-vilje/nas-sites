@@ -119,8 +119,19 @@ jobs:
             ${{ steps.tags.outputs.immutable }}
             ${{ steps.tags.outputs.moving }}
           build-args: ${{ inputs.build-args }}
-          cache-from: type=registry,ref=${{ steps.tags.outputs.moving }}
-          cache-to: type=inline
+          # GitHub Actions cache (Phase 7 / H5): faster than the
+          # previous `type=registry,ref=<moving-tag>` lookup
+          # (which round-tripped through GHCR every build) and
+          # doesn't embed cache metadata into the pushed image
+          # (the previous `type=inline` bloated the runtime
+          # image with ~MB of layer-cache directives that the
+          # NAS pulled but never used). `mode=max` caches all
+          # intermediate layers — better hit rate, costs more
+          # of the repo's 10 GB GH-Actions cache budget but
+          # well under it for the sites we run today. Cache is
+          # auto-scoped to the workflow ref by default.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Paranoia — no secrets in the image
         # Scan the image filesystem for value-assignment patterns
