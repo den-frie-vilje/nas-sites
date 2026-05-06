@@ -143,7 +143,9 @@ branch, compose file path. Then:
 - copies `nas-agent/sites.env.example` into
   `/volume1/docker/nas-sites/sites.d/<domain>.<env>.env` (root:docker
   0640), pre-fills the values you typed, opens `$EDITOR` for `CF_API_TOKEN`
-  / `CF_ZONE_ID`;
+  + `CF_ZONE_IDS` (plural, comma-separated for multi-apex sites that front
+  several CF zones from one container; legacy `CF_ZONE_ID` singular still
+  accepted unchanged);
 - offers to run a one-off agent fire as a smoke test.
 
 Run twice per new site (once for staging, once for production).

@@ -237,20 +237,29 @@ compose_running_count() {
 # ─── Cloudflare ─────────────────────────────────────────────────────────────
 
 cf_purge() {
-    local token="$1" zone="$2"
-    [ -n "$token" ] && [ -n "$zone" ] || return 0
+    # Args: <api_token> <zone1> [zone2] [...]
+    # Token must be scoped to "Zone.Cache Purge" on every zone passed.
+    # Per-zone failures are non-fatal — log and move on. Multi-zone support
+    # exists for sites that front several CF zones from one container, e.g.
+    # a multi-apex deployment serving denfrievilje.dk + ole.kristensen.name.
+    local token="$1"; shift
+    [ -n "$token" ] && [ "$#" -gt 0 ] || return 0
 
-    if curl -sSf -X POST \
-        "https://api.cloudflare.com/client/v4/zones/${zone}/purge_cache" \
-        -H "Authorization: Bearer ${token}" \
-        -H "Content-Type: application/json" \
-        --data '{"purge_everything":true}' \
-        > /dev/null
-    then
-        log "  CF purge ok"
-    else
-        log "  warn: CF purge failed (non-fatal — deploy is live)"
-    fi
+    local zone
+    for zone in "$@"; do
+        [ -n "$zone" ] || continue
+        if curl -sSf -X POST \
+            "https://api.cloudflare.com/client/v4/zones/${zone}/purge_cache" \
+            -H "Authorization: Bearer ${token}" \
+            -H "Content-Type: application/json" \
+            --data '{"purge_everything":true}' \
+            > /dev/null
+        then
+            log "  CF purge ok (zone ${zone:0:8}…)"
+        else
+            log "  warn: CF purge failed for zone ${zone:0:8}… (non-fatal — deploy is live)"
+        fi
+    done
 }
 
 # ─── Per-site deploy ────────────────────────────────────────────────────────
@@ -263,7 +272,7 @@ deploy_site() {
     # so variables don't leak between sites.
     local DOMAIN="" ENV_NAME="" REPO="" BRANCH=""
     local COMPOSE_FILE_REL="" SITE_SERVICE=""
-    local CF_API_TOKEN="" CF_ZONE_ID=""
+    local CF_API_TOKEN="" CF_ZONE_ID="" CF_ZONE_IDS=""
 
     # shellcheck disable=SC1090
     source "$config_file"
@@ -448,7 +457,18 @@ deploy_site() {
     fi
 
     # ─── Post-deploy ──────────────────────────────────────────────────────
-    cf_purge "${CF_API_TOKEN:-}" "${CF_ZONE_ID:-}"
+    # CF_ZONE_IDS (plural, comma-separated) is the preferred form — multi-
+    # apex sites that front several CF zones from one container set this.
+    # CF_ZONE_ID (singular, legacy) is still accepted as a one-element list
+    # so existing single-zone sites need no config change.
+    local cf_zones_csv="${CF_ZONE_IDS:-${CF_ZONE_ID:-}}"
+    if [ -n "$cf_zones_csv" ]; then
+        # Strip whitespace operators may have copy-pasted around the
+        # commas, then IFS-split into a positional argv list.
+        local cf_zones_arr=()
+        IFS=',' read -ra cf_zones_arr <<< "$(printf '%s' "$cf_zones_csv" | tr -d '[:space:]')"
+        cf_purge "${CF_API_TOKEN:-}" "${cf_zones_arr[@]}"
+    fi
     docker image prune -f > /dev/null 2>&1 || true
 
     log "[$project]   deploy ok"
