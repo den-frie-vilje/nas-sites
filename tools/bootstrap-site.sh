@@ -130,7 +130,7 @@ sed -i \
     -e "s|^BRANCH=.*|BRANCH=\"$BRANCH\"|" \
     -e "s|^COMPOSE_FILE_REL=.*|COMPOSE_FILE_REL=\"$COMPOSE_FILE_REL\"|" \
     "$SITES_D_FILE"
-echo "Opening \$EDITOR ($EDITOR) — fill in CF_API_TOKEN / CF_ZONE_ID if you want CF cache purge."
+echo "Opening \$EDITOR ($EDITOR) — fill in CF_API_TOKEN + CF_ZONE_IDS (or legacy CF_ZONE_ID) if you want CF cache purge."
 confirm "Open $SITES_D_FILE in $EDITOR now?" && run "$EDITOR" "$SITES_D_FILE"
 
 # ─── 5. smoke test ─────────────────────────────────────────────────────────
