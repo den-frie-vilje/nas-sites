@@ -209,10 +209,22 @@ jobs:
                   -H 'Cache-Control: no-cache' \
                   "${URL}?_cb=${attempt}" 2>/dev/null || true)
 
-              if printf '%s' "$body" | grep -qF -- "$pattern"; then
-                  echo "✓ attempt $attempt: found '$pattern' in response — deploy is live"
-                  exit 0
-              fi
+              # Pure-shell substring match. Earlier versions used
+              #   printf '%s' "$body" | grep -qF -- "$pattern"
+              # but with `set -o pipefail`, when grep -q finds the match
+              # and exits 0, printf is still writing the (potentially
+              # 100KB+) body to a closed pipe → SIGPIPE → printf exits
+              # 141 → pipefail propagates 141 → `if` reads false → the
+              # match is silently missed for large responses. Repro is
+              # timing-dependent (small bodies finish printf before grep
+              # exits, large bodies race). The case-glob form has no
+              # pipeline at all, so no SIGPIPE possible.
+              case "$body" in
+                  *"$pattern"*)
+                      echo "✓ attempt $attempt: found '$pattern' in response — deploy is live"
+                      exit 0
+                      ;;
+              esac
 
               echo "  attempt $attempt: not yet, sleeping 60s"
               sleep 60
