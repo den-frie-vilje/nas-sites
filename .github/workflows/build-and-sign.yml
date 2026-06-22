@@ -81,7 +81,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # Full history so gitleaks can scan every accessible commit, not
           # just HEAD. The threat model: a secret only has to ship once in
