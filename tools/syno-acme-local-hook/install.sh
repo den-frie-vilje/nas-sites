@@ -54,11 +54,18 @@ cat <<EOF
 Installed.
 
 To switch an existing cert from the credentialed synology_dsm hook to the
-local one, edit ~/.acme.sh/<cert>/<cert>.conf (or run acme.sh --deploy
-once with the new hook), then remove the credentials from acme.sh's
-account.conf:
+local one, run an explicit deploy once with the new hook. SYNO_Certificate
+is REQUIRED: it names the DSM cert slot the renewals will keep replacing
+(the "friendly name" shown in DSM Control Panel -> Security -> Certificate).
+The hook saves it in the cert's deploy conf, so scheduled renewals reuse
+it without any environment set up:
 
+  SYNO_Certificate=<friendly-name> \
   acme.sh --deploy -d <domain> --deploy-hook synology_dsm_local
+
+Further env vars (persisted the same way):
+  SYNO_Create=1                      # allow creating a new slot if missing
+  SYNO_Default=1                     # mark the imported cert as default
 
 Then in account.conf, you can safely delete:
   SAVED_SYNO_Username=...
@@ -66,10 +73,8 @@ Then in account.conf, you can safely delete:
   SAVED_SYNO_DeviceID=... (if present from the 2FA dance)
   SAVED_SYNO_OTPCode=...
 
-Optional env vars for the new hook (all optional):
-  SYNO_Certificate=<friendly-name>   # bind to a specific cert slot by name
-  SYNO_Create=1                      # allow creating a new slot if missing
-  SYNO_Default=1                     # mark the imported cert as default
+The DSM Task Scheduler entry that runs the renewal must run as root:
+the hook calls synowebapi locally and refuses to run otherwise.
 
 Run a renewal end-to-end as a smoke test before relying on this in
 production:

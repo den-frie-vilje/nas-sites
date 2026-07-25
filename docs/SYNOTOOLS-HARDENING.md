@@ -105,6 +105,35 @@ needed in `account.conf`.
    sudo synouser --del sc-acmesh-tmp
    ```
 
+## Incident: renewals stranded in an orphan cert slot (July 2026)
+
+The first scheduled renewal after migrating to this hook left the NAS
+serving an expired wildcard certificate, even though acme.sh renewed on
+schedule and reported success. Two independent bugs in the hook's first
+version caused it, both reproduced and fixed via the test rig in
+[`tools/syno-acme-local-hook/test/`](../tools/syno-acme-local-hook/test/):
+
+1. **Deploy config was not persisted.** The hook read `SYNO_Certificate`
+   straight from the environment, which only exists on the operator's
+   initial `--deploy`. DSM Task Scheduler renewals run with a clean
+   environment, so the hook imported with no slot name and no id; DSM
+   filed the fresh cert in a new, unbound slot, and every service kept
+   the old cert until it expired. The hook now round-trips its `SYNO_*`
+   settings through acme.sh's `_savedeployconf`/`_getdeployconf`, requires
+   `SYNO_Certificate` to be non-empty, and fails loudly otherwise.
+2. **The id-by-name lookup assumed the wrong JSON key order.** synowebapi
+   prints certificate objects with keys in alphabetical order, so `desc`
+   precedes `id`; the original line-oriented awk paired each `desc` with
+   the *previous* certificate's id and returned nothing for the first
+   match. The lookup now splits per-object and matches the two fields in
+   either order, and the hook re-lists after import to verify the name
+   resolves to the slot it replaced, refusing to report success otherwise.
+
+Lesson recorded here because it generalises: an acme.sh deploy hook's
+environment variables are gone by the time cron renews; any hook that
+needs configuration must persist it with `_savedeployconf` or it will
+only ever work on the day it was installed.
+
 ## Risks introduced
 
 - The cert-import API is undocumented. If a future DSM major release

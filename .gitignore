@@ -7,3 +7,6 @@ shared/webhook/webhook.env
 
 .DS_Store
 *.log
+
+# Test-rig dependencies and state fetched at run time
+tools/syno-acme-local-hook/test/work/
