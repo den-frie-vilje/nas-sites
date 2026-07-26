@@ -99,56 +99,57 @@ def main():
         emit({"data": {"certificates": state["certificates"]}, "success": True})
 
     if api == "SYNO.Core.Certificate" and method == "import":
+        # On-NAS probing of DSM 7.2.2 (July 2026) established that import
+        # with id= — replacing an existing slot — ALWAYS fails with error
+        # 5511 through the local --exec-fastwebapi path, regardless of
+        # file location, file naming, or key format (RSA/SEC1/PKCS#8 all
+        # create fine, and the same files fail the moment id= is added).
+        # Only creation (no id) works locally. The mock reproduces that
+        # verbatim so any hook that tries to replace via the API fails
+        # here the way it fails on a real NAS.
+        if params.get("id", ""):
+            emit({"error": {"code": 5511}, "success": False}, ok=False)
+
         cert_file = params.get("cert_tmp", "")
         key_file = params.get("key_tmp", "")
-        # Real DSM 7.2.2 rejects *_tmp paths in two cases, both established
-        # by on-NAS probing (July 2026): paths containing glob characters
-        # (a wildcard-primary cert has '*' in every acme.sh path), and
-        # paths under the caller's /tmp (the handler runs with a private
-        # /tmp namespace, so such files are invisible to it). Error codes
-        # per zaxbux/syno-acme: 5510 illegal certificate file, 5511
-        # illegal key file, 5512 illegal intermediate file. Key is checked
-        # first, matching the observed 5511.
-        for param, code in (("key_tmp", 5511), ("cert_tmp", 5510),
-                            ("inter_cert_tmp", 5512)):
-            path = params.get(param, "")
-            if any(ch in path for ch in "*?[") or path.startswith("/tmp/"):
-                emit({"error": {"code": code}, "success": False}, ok=False)
         if not (os.path.isfile(cert_file) and os.path.isfile(key_file)):
             emit({"error": {"code": 117}, "success": False}, ok=False)
         cn, fingerprint, valid_from, valid_till = cert_info(cert_file)
         as_default = params.get("as_default", "false") == "true"
-        slot_id = params.get("id", "")
         desc = params.get("desc", "")
 
-        if slot_id:
-            slot = next(
-                (c for c in state["certificates"] if c["id"] == slot_id), None)
-            if slot is None:
-                emit({"error": {"code": 5507}, "success": False}, ok=False)
-            slot["desc"] = desc or slot["desc"]
-            slot["fingerprint"] = fingerprint
-            slot["subject"] = {"common_name": cn}
-            slot["valid_from"] = valid_from
-            slot["valid_till"] = valid_till
-        else:
-            slot = {
-                "desc": desc or cn,
-                "fingerprint": fingerprint,
-                "id": new_id(),
-                "is_broken": False,
-                "is_default": False,
-                "issuer": {"common_name": "Pebble Intermediate CA"},
-                "key_types": "ECC",
-                "renewable": False,
-                "services": [],
-                "signature_algorithm": "sha256WithRSAEncryption",
-                "subject": {"common_name": cn},
-                "user_deletable": True,
-                "valid_from": valid_from,
-                "valid_till": valid_till,
-            }
-            state["certificates"].append(slot)
+        slot = {
+            "desc": desc or cn,
+            "id": new_id(),
+            "is_broken": False,
+            "is_default": False,
+            "issuer": {"common_name": "Pebble Intermediate CA"},
+            "key_types": "ECC",
+            "renewable": False,
+            "services": [],
+            "signature_algorithm": "sha256WithRSAEncryption",
+            "subject": {"common_name": cn},
+            "user_deletable": True,
+            "valid_from": valid_from,
+            "valid_till": valid_till,
+        }
+        state["certificates"].append(slot)
+
+        # Like real DSM: a created slot gets an _archive/<id>/ directory
+        # holding the four PEMs. The file-based replace path operates on
+        # these, so the mock must create them.
+        arch = os.path.join("/usr/syno/etc/certificate/_archive", slot["id"])
+        os.makedirs(arch, exist_ok=True)
+        import shutil
+        shutil.copy(key_file, os.path.join(arch, "privkey.pem"))
+        shutil.copy(cert_file, os.path.join(arch, "cert.pem"))
+        chain_file = params.get("inter_cert_tmp", "")
+        chain = ""
+        if chain_file and os.path.isfile(chain_file):
+            shutil.copy(chain_file, os.path.join(arch, "chain.pem"))
+            chain = open(chain_file).read()
+        with open(os.path.join(arch, "fullchain.pem"), "w") as f:
+            f.write(open(cert_file).read() + chain)
 
         if as_default:
             for c in state["certificates"]:

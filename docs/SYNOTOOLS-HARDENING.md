@@ -129,30 +129,41 @@ version caused it, both reproduced and fixed via the test rig in
    either order, and the hook re-lists after import to verify the name
    resolves to the slot it replaced, refusing to report success otherwise.
 
-A third failure surfaced during recovery, on the first correctly-formed
-import: DSM answered `{"error":{"code":5511}}`. On-NAS probing (four
-self-contained imports from different locations and key formats) pinned
-down two path rules in the DSM 7.2.2 import handler, each sufficient to
-produce that error:
+A third failure surfaced during recovery: every correctly-formed import
+answered `{"error":{"code":5511}}`. Two path theories (a literal `*` in
+the acme.sh file paths of a wildcard-primary cert; files staged under
+the calling shell's `/tmp`) were each implemented and disproved — the
+staged, plain-named, home-adjacent files failed identically. A
+parameter bisect over eight on-NAS probe imports then isolated the real
+trigger:
 
-- `*_tmp` paths containing a literal `*` are rejected, and a wildcard
-  cert whose primary name is the wildcard puts one in every acme.sh
-  path (`.../*.example.com_ecc/*.example.com.key`);
-- `*_tmp` paths under the calling shell's `/tmp` are rejected — the
-  handler evidently runs with a private `/tmp` namespace, so files
-  staged there are invisible to it, and the failed open surfaces as
-  "illegal key file".
+- creating a slot (import WITHOUT `id`) works from arbitrary local
+  paths, with RSA, SEC1 EC, and PKCS#8 EC keys alike, even with `*` in
+  the friendly name;
+- replacing a slot (import WITH `id`) ALWAYS fails with 5511 on
+  DSM 7.2.2 through `--exec-fastwebapi` — including against a freshly
+  created, known-good slot with the very same files that created it.
 
-Key format is not a factor: RSA, SEC1 EC, and PKCS#8 EC keys all import
-fine from a plain-named path under the acme.sh home. Over HTTP the
-handler only ever sees uploaded temp files with tame names in its own
-namespace, which is why the same PEM content imports fine through the
-GUI. The hook now stages key, cert, and chain under plain names into a
-`mktemp -d` directory next to the acme.sh home (the parent of the
-cert's own directory) before calling the import, and removes it as soon
-as synowebapi returns. Error codes, per the zaxbux/syno-acme reference:
-5510 illegal certificate file, 5511 illegal key file, 5512 illegal
-intermediate file.
+The nominal meaning of 5511 ("illegal key file", per zaxbux/syno-acme's
+error map, alongside 5510 illegal certificate and 5512 illegal
+intermediate) is therefore misleading here; replace-by-id evidently
+takes a different code path locally than through the HTTP upload flow,
+where the same parameters work. zaxbux's replace-by-id was presumably
+sound on the DSM version it targeted; it is not on 7.2.2.
+
+The hook now splits by case. Slot creation still goes through
+synowebapi (the path that provably works). Slot REPLACEMENT is done the
+way the DSM community has long done it: overwrite the four PEMs in
+`/usr/syno/etc/certificate/_archive/<id>/`, propagate to every service
+directory holding a copy of the same certificate (matched by SHA-256
+fingerprint under both `/usr/syno/etc/certificate` and
+`/usr/local/etc/certificate`, which covers system default, reverse
+proxies, and Web Station vhosts), regenerate the web config with
+`synow3tool --gen-all`, and restart nginx with `synosystemctl`. All
+touched files are backed up first and restored on any failure, and the
+hook still stages the PEMs under plain names next to the acme.sh home
+(wildcard-primary certs have `*` in every acme.sh path, which is unsafe
+to hand to any tooling).
 
 Lesson recorded here because it generalises: an acme.sh deploy hook's
 environment variables are gone by the time cron renews; any hook that
