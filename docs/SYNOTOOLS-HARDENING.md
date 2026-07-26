@@ -60,6 +60,16 @@ needed in `account.conf`.
 
 ## Migration steps
 
+On our NASes, acme.sh lives in the admin user's DSM home:
+`/volume1/homes/admin/.acme.sh`. The hook needs root, acme.sh refuses
+plain `sudo`, and a root shell's default acme.sh home is `/root/.acme.sh`
+— so every acme.sh command below runs inside `sudo su` and passes
+`--home` explicitly. `install.sh` detects this location on its own.
+
+```sh
+ACME_HOME=/volume1/homes/admin/.acme.sh
+```
+
 1. Bootstrap the new hook (once per NAS):
 
    ```sh
@@ -67,34 +77,31 @@ needed in `account.conf`.
    ```
 
 2. Switch each cert that currently uses `synology_dsm` to
-   `synology_dsm_local`. acme.sh stores the deploy-hook name per cert in
-   `~/.acme.sh/<domain>/<domain>.conf`:
+   `synology_dsm_local` with one explicit deploy (which acme.sh saves,
+   along with the SYNO_* settings). From `sudo su`; add `--ecc` for ECC
+   certs and quote the domain, wildcards glob:
 
    ```sh
-   sed -i 's|^Le_DeployHook=.*|Le_DeployHook="synology_dsm_local"|' \
-       ~/.acme.sh/<domain>/<domain>.conf
-   ```
-
-   Or run an explicit deploy with the new hook (which acme.sh saves):
-
-   ```sh
-   acme.sh --deploy -d <domain> --deploy-hook synology_dsm_local
+   SYNO_Certificate='<friendly-name-in-DSM-GUI>' \
+   $ACME_HOME/acme.sh --home $ACME_HOME \
+     --deploy -d '<domain>' --ecc --deploy-hook synology_dsm_local
    ```
 
 3. Force a renewal as a smoke test BEFORE removing the old credentials:
 
    ```sh
-   acme.sh --renew -d <domain> --force
+   $ACME_HOME/acme.sh --home $ACME_HOME --renew -d '<domain>' --ecc --force
    ```
 
    DSM Control Panel → Security → Certificate should show the updated
-   "Valid from / to" within seconds.
+   "Valid from / to" within seconds. The Task Scheduler entry must run
+   the same way: as root, with `--cron --home $ACME_HOME`.
 
 4. Once the smoke test passes, remove the credentials from
-   `~/.acme.sh/account.conf`:
+   `$ACME_HOME/account.conf`:
 
    ```sh
-   sed -i '/^SAVED_SYNO_/d' ~/.acme.sh/account.conf
+   sed -i '/^SAVED_SYNO_/d' $ACME_HOME/account.conf
    ```
 
 5. (Optional) clean up the temporary admin user the upstream hook may
