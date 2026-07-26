@@ -15,14 +15,19 @@
 # Install with: tools/syno-acme-local-hook/install.sh
 # (which copies this file into ~/.acme.sh/deploy/ and sets it executable).
 #
-# ENV (all optional):
-#   SYNO_Certificate   — friendly name to bind to (e.g. "wildcard-prod"). If
-#                        unset, this hook lets DSM auto-name the cert.
+# ENV:
+#   SYNO_Certificate   — REQUIRED on the first --deploy: friendly name of the
+#                        DSM cert slot to bind to (e.g. "wildcard-prod").
+#                        Persisted by acme.sh in the cert's deploy conf, so
+#                        scheduled renewals reuse it without any env set.
+#                        Importing without a name would create a new unbound
+#                        slot on every renewal, so an empty name is an error.
 #   SYNO_Create        — set to "1" to create the cert slot if it doesn't
 #                        exist. Without this, an unknown SYNO_Certificate
-#                        is an error.
+#                        is an error. Persisted like SYNO_Certificate.
 #   SYNO_Default       — set to "1" to mark the imported cert as DSM's
 #                        default. Default 0 (don't change default state).
+#                        Persisted like SYNO_Certificate.
 #
 # Compatibility note: this hook was tested against DSM 7.2.2. The
 # synowebapi cert-import call is undocumented but has been stable across
@@ -36,6 +41,33 @@
 # `synology_dsm_local_deploy` taking (domain, key_file, cert_file, ca_file,
 # fullchain_file). It runs in acme.sh's bash context with the _info / _err
 # helpers available.
+
+# Extract the id of the certificate whose desc equals $2 from the JSON in
+# $1 (output of SYNO.Core.Certificate.CRT list). synowebapi emits object
+# keys alphabetically, so "desc" precedes "id"; a line-oriented scan that
+# remembers the last-seen id therefore pairs a desc with the PREVIOUS
+# cert's id. Instead, split the JSON at every '}' — desc and id are
+# adjacent top-level keys of each certificate object, with only nested
+# objects (issuer, subject, services) after them, so both always land in
+# the same fragment — and match the two fields in either order.
+_syno_cert_id_by_desc() {
+    printf '%s' "$1" | awk -v want="$2" '
+        BEGIN { RS = "}" }
+        {
+            id = ""; d = ""; found_d = 0
+            if (match($0, /"id"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+                s = substr($0, RSTART, RLENGTH)
+                sub(/^"id"[[:space:]]*:[[:space:]]*"/, "", s); sub(/"$/, "", s)
+                id = s
+            }
+            if (match($0, /"desc"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+                s = substr($0, RSTART, RLENGTH)
+                sub(/^"desc"[[:space:]]*:[[:space:]]*"/, "", s); sub(/"$/, "", s)
+                d = s; found_d = 1
+            }
+            if (found_d && d == want && id != "") { print id; exit }
+        }'
+}
 
 synology_dsm_local_deploy() {
     _cdomain="$1"
@@ -61,38 +93,40 @@ synology_dsm_local_deploy() {
         return 1
     fi
 
-    # Friendly-name handling. If SYNO_Certificate is unset, list existing
-    # certs and let DSM auto-name. If set, look up the existing id; if
-    # missing and SYNO_Create=1, create with this name.
+    # Config handling. On an operator-run `--deploy` these come from the
+    # environment; acme.sh then persists them (via _savedeployconf below) in
+    # the cert's own conf so scheduled renewals — which run with a clean
+    # environment — restore them here with _getdeployconf. Without this
+    # round-trip a renewal would import with no name and no id, and DSM
+    # would file the new cert in a fresh unbound slot while every service
+    # kept serving the old, expiring cert.
+    _getdeployconf SYNO_Certificate
+    _getdeployconf SYNO_Create
+    _getdeployconf SYNO_Default
     _syno_desc="${SYNO_Certificate:-}"
     _syno_create="${SYNO_Create:-0}"
     _syno_default="${SYNO_Default:-0}"
 
-    _info "synology_dsm_local: importing certificate for $_cdomain"
-    _existing_id=""
-    if [ -n "$_syno_desc" ]; then
-        # SYNO.Core.Certificate.CRT method=list returns JSON. Extract id by
-        # matching desc field; case-sensitive match on the friendly name.
-        _list=$(/usr/syno/bin/synowebapi --exec-fastwebapi \
-            api=SYNO.Core.Certificate.CRT method=list version=1 2>&1) || {
-            _err "synology_dsm_local: SYNO.Core.Certificate.CRT list failed"
-            _err "$_list"
-            return 1
-        }
-        # crude JSON extraction sufficient for `desc` field. Quoted, no nested
-        # objects expected at this level.
-        _existing_id=$(printf '%s' "$_list" \
-            | tr ',' '\n' \
-            | awk -v desc="$_syno_desc" '
-                /"id"/  {gsub(/[":,]/, ""); split($0, a, " "); cur_id=a[2]}
-                /"desc"/{gsub(/[":,]/, ""); split($0, a, " "); if (a[2] == desc) print cur_id}
-              ' \
-            | head -n1)
-        if [ -z "$_existing_id" ] && [ "$_syno_create" != "1" ]; then
-            _err "synology_dsm_local: no cert with desc='$_syno_desc' and SYNO_Create not set."
-            _err "Set SYNO_Create=1 to create a new cert slot, or pick an existing SYNO_Certificate."
-            return 1
-        fi
+    if [ -z "$_syno_desc" ]; then
+        _err "synology_dsm_local: SYNO_Certificate is not set (env or saved deploy conf)."
+        _err "A friendly name is required so renewals replace the same DSM cert slot"
+        _err "instead of creating a new unbound one. Run once with:"
+        _err "  SYNO_Certificate=<name> [SYNO_Create=1] acme.sh --deploy -d $_cdomain --deploy-hook synology_dsm_local"
+        return 1
+    fi
+
+    _info "synology_dsm_local: importing certificate for $_cdomain into slot '$_syno_desc'"
+    _list=$(/usr/syno/bin/synowebapi --exec-fastwebapi \
+        api=SYNO.Core.Certificate.CRT method=list version=1 2>&1) || {
+        _err "synology_dsm_local: SYNO.Core.Certificate.CRT list failed"
+        _err "$_list"
+        return 1
+    }
+    _existing_id=$(_syno_cert_id_by_desc "$_list" "$_syno_desc")
+    if [ -z "$_existing_id" ] && [ "$_syno_create" != "1" ]; then
+        _err "synology_dsm_local: no cert with desc='$_syno_desc' and SYNO_Create not set."
+        _err "Set SYNO_Create=1 to create a new cert slot, or pick an existing SYNO_Certificate."
+        return 1
     fi
 
     # Build the import call. Args:
@@ -126,12 +160,41 @@ synology_dsm_local_deploy() {
     # synowebapi returns {"success":true,...} on success and {"success":false,
     # "error":{"code":N,...}} on failure. Refuse to silently treat anything
     # other than success:true as a win.
-    if printf '%s' "$_result" | grep -q '"success"[[:space:]]*:[[:space:]]*true'; then
-        _info "synology_dsm_local: cert imported OK"
-        return 0
+    if ! printf '%s' "$_result" | grep -q '"success"[[:space:]]*:[[:space:]]*true'; then
+        _err "synology_dsm_local: synowebapi returned non-success:"
+        _err "$_result"
+        return 1
     fi
 
-    _err "synology_dsm_local: synowebapi returned non-success:"
-    _err "$_result"
-    return 1
+    # Post-import verification: re-list and confirm the friendly name now
+    # resolves to a slot — and, when we replaced an existing slot, to the
+    # SAME slot. "success:true with the cert filed somewhere else" is this
+    # hook's worst failure mode (services silently keep the old cert), so
+    # it must fail loudly rather than report a clean deploy.
+    _list=$(/usr/syno/bin/synowebapi --exec-fastwebapi \
+        api=SYNO.Core.Certificate.CRT method=list version=1 2>&1) || {
+        _err "synology_dsm_local: post-import list failed"
+        _err "$_list"
+        return 1
+    }
+    _final_id=$(_syno_cert_id_by_desc "$_list" "$_syno_desc")
+    if [ -z "$_final_id" ]; then
+        _err "synology_dsm_local: import reported success but no cert with desc='$_syno_desc' exists."
+        _err "$_list"
+        return 1
+    fi
+    if [ -n "$_existing_id" ] && [ "$_final_id" != "$_existing_id" ]; then
+        _err "synology_dsm_local: import landed in slot '$_final_id' instead of replacing '$_existing_id'."
+        _err "Services bound to '$_existing_id' would keep serving the old certificate."
+        return 1
+    fi
+
+    # Persist the config in the cert's deploy conf so the next scheduled
+    # renewal, running with a clean environment, targets the same slot.
+    _savedeployconf SYNO_Certificate "$_syno_desc" "base64"
+    _savedeployconf SYNO_Create "$_syno_create"
+    _savedeployconf SYNO_Default "$_syno_default"
+
+    _info "synology_dsm_local: cert imported OK into slot '$_syno_desc' (id=$_final_id)"
+    return 0
 }

@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Mock of Synology DSM's /usr/syno/bin/synowebapi, cert APIs only.
+
+Emulates the two calls the synology_dsm_local acme.sh deploy hook makes:
+
+  synowebapi --exec-fastwebapi api=SYNO.Core.Certificate.CRT method=list version=1
+  synowebapi --exec-fastwebapi api=SYNO.Core.Certificate method=import version=1 \
+      key_tmp=<file> cert_tmp=<file> [inter_cert_tmp=<file>] [id=<id>] \
+      [desc=<name>] as_default=true|false
+
+Behaviour mirrors DSM 7.2 as observed via the upstream acme.sh synology_dsm
+hook and zaxbux/syno-acme:
+
+- list returns {"data": {"certificates": [...]}, "success": true} with each
+  certificate object's keys in ALPHABETICAL order (desc before id), pretty
+  printed, as the real binary does.
+- import with id= replaces that slot in place, keeping its services binding.
+- import without id= creates a NEW slot with a fresh random id and NO
+  services bound (this is exactly what real DSM does, and is the behaviour
+  that strands renewals in an orphan slot).
+- Unknown id => {"success": false, "error": {"code": 5507}}.
+
+State is a JSON file at $SYNO_MOCK_STATE (default /usr/syno/mock-state.json).
+Every invocation is appended to $SYNO_MOCK_LOG for later assertions.
+"""
+
+import json
+import os
+import random
+import string
+import subprocess
+import sys
+import time
+
+STATE = os.environ.get("SYNO_MOCK_STATE", "/usr/syno/mock-state.json")
+LOG = os.environ.get("SYNO_MOCK_LOG", "/usr/syno/mock-synowebapi.log")
+
+
+def load_state():
+    if os.path.exists(STATE):
+        with open(STATE) as f:
+            return json.load(f)
+    return {"certificates": []}
+
+
+def save_state(state):
+    with open(STATE, "w") as f:
+        json.dump(state, f, indent=2, sort_keys=True)
+
+
+def log_call(argv):
+    with open(LOG, "a") as f:
+        f.write(json.dumps({"ts": time.time(), "argv": argv}) + "\n")
+
+
+def emit(obj, ok=True):
+    # Real synowebapi pretty-prints with three-space indent and sorted keys.
+    print(json.dumps(obj, indent=3, sort_keys=True))
+    sys.exit(0 if ok else 1)
+
+
+def cert_info(cert_file):
+    def x509(*args):
+        return subprocess.run(
+            ["openssl", "x509", "-noout", "-in", cert_file, *args],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    subject = x509("-subject")
+    fingerprint = x509("-fingerprint", "-sha256").split("=", 1)[1]
+    dates = dict(
+        line.split("=", 1)
+        for line in x509("-dates").splitlines()
+    )
+    cn = subject.split("CN", 1)[-1].lstrip(" =") if "CN" in subject else subject
+    return cn, fingerprint, dates["notBefore"], dates["notAfter"]
+
+
+def new_id():
+    return "".join(random.choices(string.ascii_letters, k=6))
+
+
+def main():
+    argv = sys.argv[1:]
+    log_call(argv)
+    if not argv or argv[0] != "--exec-fastwebapi":
+        emit({"error": {"code": 100}, "success": False}, ok=False)
+    params = {}
+    for arg in argv[1:]:
+        if "=" in arg:
+            k, v = arg.split("=", 1)
+            params[k] = v
+
+    api = params.get("api", "")
+    method = params.get("method", "")
+    state = load_state()
+
+    if api == "SYNO.Core.Certificate.CRT" and method == "list":
+        emit({"data": {"certificates": state["certificates"]}, "success": True})
+
+    if api == "SYNO.Core.Certificate" and method == "import":
+        cert_file = params.get("cert_tmp", "")
+        key_file = params.get("key_tmp", "")
+        if not (os.path.isfile(cert_file) and os.path.isfile(key_file)):
+            emit({"error": {"code": 117}, "success": False}, ok=False)
+        cn, fingerprint, valid_from, valid_till = cert_info(cert_file)
+        as_default = params.get("as_default", "false") == "true"
+        slot_id = params.get("id", "")
+        desc = params.get("desc", "")
+
+        if slot_id:
+            slot = next(
+                (c for c in state["certificates"] if c["id"] == slot_id), None)
+            if slot is None:
+                emit({"error": {"code": 5507}, "success": False}, ok=False)
+            slot["desc"] = desc or slot["desc"]
+            slot["fingerprint"] = fingerprint
+            slot["subject"] = {"common_name": cn}
+            slot["valid_from"] = valid_from
+            slot["valid_till"] = valid_till
+        else:
+            slot = {
+                "desc": desc or cn,
+                "fingerprint": fingerprint,
+                "id": new_id(),
+                "is_broken": False,
+                "is_default": False,
+                "issuer": {"common_name": "Pebble Intermediate CA"},
+                "key_types": "ECC",
+                "renewable": False,
+                "services": [],
+                "signature_algorithm": "sha256WithRSAEncryption",
+                "subject": {"common_name": cn},
+                "user_deletable": True,
+                "valid_from": valid_from,
+                "valid_till": valid_till,
+            }
+            state["certificates"].append(slot)
+
+        if as_default:
+            for c in state["certificates"]:
+                c["is_default"] = c["id"] == slot["id"]
+
+        save_state(state)
+        emit({"data": {"id": slot["id"]}, "success": True})
+
+    emit({"error": {"code": 101}, "success": False}, ok=False)
+
+
+if __name__ == "__main__":
+    main()
