@@ -129,10 +129,25 @@ version caused it, both reproduced and fixed via the test rig in
    either order, and the hook re-lists after import to verify the name
    resolves to the slot it replaced, refusing to report success otherwise.
 
+A third failure surfaced during recovery, on the first correctly-formed
+import: DSM answered `{"error":{"code":5511}}`. The import handler
+rejects `*_tmp` file paths containing a literal `*`, and a wildcard
+cert whose primary name is the wildcard puts one in every acme.sh path
+(`.../*.example.com_ecc/*.example.com.key`). Over HTTP the handler only
+ever sees uploaded temp files with tame names, which is why the same
+PEM content imports fine through the GUI. The hook now stages key,
+cert, and chain into a `mktemp -d` directory under plain names before
+calling the import. Error codes, per the zaxbux/syno-acme reference:
+5510 illegal certificate file, 5511 illegal key file, 5512 illegal
+intermediate file.
+
 Lesson recorded here because it generalises: an acme.sh deploy hook's
 environment variables are gone by the time cron renews; any hook that
 needs configuration must persist it with `_savedeployconf` or it will
-only ever work on the day it was installed.
+only ever work on the day it was installed. And when bypassing a DSM
+HTTP surface to call the underlying API directly, reproduce what the
+HTTP layer would have done to the inputs (here: plain-named temp
+files), not just the parameters it would have passed.
 
 ## Risks introduced
 
