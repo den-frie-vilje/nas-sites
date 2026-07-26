@@ -72,12 +72,26 @@ done
 # ---- clean slate -----------------------------------------------------------
 pkill -f pebble-challtestsrv 2>/dev/null; pkill -f 'bin/pebble' 2>/dev/null
 sleep 0.5
-rm -rf "$ACME_HOME" "$SYNO_MOCK_STATE" "$SYNO_MOCK_LOG"
+rm -rf "$ACME_HOME" "$SYNO_MOCK_STATE" "$SYNO_MOCK_LOG" \
+  /usr/syno/etc/certificate /usr/local/etc/certificate
+mkdir -p /usr/syno/etc/certificate/_archive /usr/local/etc/certificate
 
-# ---- mock DSM binary -------------------------------------------------------
+# ---- mock DSM binaries -----------------------------------------------------
 mkdir -p /usr/syno/bin
 cp "$RIG/mock-synowebapi" /usr/syno/bin/synowebapi
 chmod +x /usr/syno/bin/synowebapi
+# Stubs for the reload tooling the replace path calls; they log the call so
+# the verdict can assert nginx was actually restarted.
+RELOAD_LOG="$WORK/reload.log"; rm -f "$RELOAD_LOG"
+cat > /usr/syno/bin/synow3tool <<EOF
+#!/bin/sh
+echo "synow3tool \$*" >> "$RELOAD_LOG"
+EOF
+cat > /usr/syno/bin/synosystemctl <<EOF
+#!/bin/sh
+echo "synosystemctl \$*" >> "$RELOAD_LOG"
+EOF
+chmod +x /usr/syno/bin/synow3tool /usr/syno/bin/synosystemctl
 
 # ---- pebble + challtestsrv -------------------------------------------------
 if [ ! -f "$WORK/pebble-https.pem" ]; then
@@ -132,19 +146,54 @@ SYNO_Certificate="$DESC" SYNO_Create=1 \
   || { echo "INITIAL DEPLOY FAILED"; exit 2; }
 
 # ---- operator binds services to the slot in the DSM GUI --------------------
-python3 - <<EOF
+# Binding = DSM records the slot in _archive/INFO and copies its PEMs into
+# each bound service's own directory. The rig emulates the copies for two
+# services in the two separate trees the hook must both cover.
+SLOT_ID=$(python3 - <<EOF
 import json
 s = json.load(open("$SYNO_MOCK_STATE"))
 slots = [c for c in s["certificates"] if c["desc"] == "$DESC"]
 assert len(slots) == 1, f"expected 1 slot named $DESC, got {len(slots)}"
 slots[0]["services"] = [{"display_name": "Web Station vhosts", "service": "default"}]
 json.dump(s, open("$SYNO_MOCK_STATE", "w"), indent=2, sort_keys=True)
+print(slots[0]["id"])
 EOF
-FP_BEFORE=$(python3 -c "
+)
+ARCH="/usr/syno/etc/certificate/_archive/$SLOT_ID"
+mkdir -p /usr/syno/etc/certificate/system/default \
+  /usr/local/etc/certificate/WebStation/vhost_probe
+cp "$ARCH"/*.pem /usr/syno/etc/certificate/system/default/
+cp "$ARCH"/*.pem /usr/local/etc/certificate/WebStation/vhost_probe/
+FP_BEFORE=$(openssl x509 -noout -fingerprint -sha256 \
+  -in /usr/syno/etc/certificate/system/default/cert.pem | cut -d= -f2)
+say "services bound to slot $SLOT_ID; serving fingerprint: $FP_BEFORE"
+
+# ---- decoy: a GUI-made cert for a different domain -------------------------
+# The replace path must leave every other slot alone. Plant one with its
+# own archive dir, service binding, and state entry; the verdict asserts
+# it is untouched after the wildcard renewal.
+DECOY_ARCH=/usr/syno/etc/certificate/_archive/guiSlot
+mkdir -p "$DECOY_ARCH" /usr/syno/etc/certificate/ReverseProxy/decoy
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -keyout "$DECOY_ARCH/privkey.pem" -out "$DECOY_ARCH/cert.pem" \
+  -days 30 -subj "/CN=gui-made.dfv.test" 2>/dev/null
+cp "$DECOY_ARCH/cert.pem" "$DECOY_ARCH/fullchain.pem"
+cp "$DECOY_ARCH"/*.pem /usr/syno/etc/certificate/ReverseProxy/decoy/
+FP_DECOY=$(openssl x509 -noout -fingerprint -sha256 \
+  -in "$DECOY_ARCH/cert.pem" | cut -d= -f2)
+python3 - <<EOF
 import json
-s = json.load(open('$SYNO_MOCK_STATE'))
-print([c['fingerprint'] for c in s['certificates'] if c['services']][0])")
-say "services bound; serving fingerprint: $FP_BEFORE"
+s = json.load(open("$SYNO_MOCK_STATE"))
+s["certificates"].append({
+    "desc": "gui-made.dfv.test", "id": "guiSlot", "is_broken": False,
+    "is_default": False, "issuer": {"common_name": "self"},
+    "key_types": "ECC", "renewable": False,
+    "services": [{"display_name": "Reverse Proxy", "service": "decoy"}],
+    "signature_algorithm": "sha256WithRSAEncryption",
+    "subject": {"common_name": "gui-made.dfv.test"},
+    "user_deletable": True, "valid_from": "", "valid_till": ""})
+json.dump(s, open("$SYNO_MOCK_STATE", "w"), indent=2, sort_keys=True)
+EOF
 
 # ---- simulated DSM Task Scheduler renewal: clean env, no SYNO_* vars -------
 say "simulated scheduled renewal (clean environment, --cron --force)"
@@ -159,20 +208,44 @@ grep -E "Deploy|error|Error" "$WORK/cron.log" | tail -5
 say "verdict"
 FP_LIVE=$(openssl x509 -noout -fingerprint -sha256 \
   -in "$ACME_HOME/${CERTNAME}_ecc/${CERTNAME}.cer" | cut -d= -f2)
-python3 - "$FP_LIVE" "$CRON_RC" "$FP_BEFORE" <<'EOF'
-import json, os, sys
-fp_live, cron_rc, fp_before = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+python3 - "$FP_LIVE" "$CRON_RC" "$FP_BEFORE" "$SLOT_ID" "$RELOAD_LOG" "$FP_DECOY" <<'EOF'
+import json, os, subprocess, sys
+fp_live, cron_rc, fp_before, slot_id, reload_log, fp_decoy = \
+    sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
+
+def fp(path):
+    try:
+        out = subprocess.run(
+            ["openssl", "x509", "-noout", "-fingerprint", "-sha256", "-in", path],
+            capture_output=True, text=True, check=True).stdout
+        return out.split("=", 1)[1].strip()
+    except Exception:
+        return "<unreadable>"
+
 s = json.load(open(os.environ["SYNO_MOCK_STATE"]))
 certs = s["certificates"]
-bound = [c for c in certs if c["services"]]
+serving = {
+    "archive slot":       f"/usr/syno/etc/certificate/_archive/{slot_id}/cert.pem",
+    "system/default":     "/usr/syno/etc/certificate/system/default/cert.pem",
+    "WebStation vhost":   "/usr/local/etc/certificate/WebStation/vhost_probe/cert.pem",
+}
 print(f"cron exit code:        {cron_rc}")
-print(f"cert slots in DSM:     {len(certs)}")
-for c in certs:
-    tag = "BOUND, serving" if c["services"] else "orphan, serves nothing"
-    fresh = "NEW cert" if c["fingerprint"] == fp_live else "OLD cert"
-    print(f"  id={c['id']} desc={c['desc']!r:20} [{tag}] [{fresh}]")
-ok = (len(bound) == 1 and bound[0]["fingerprint"] == fp_live
-      and fp_live != fp_before and len(certs) == 1 and cron_rc == 0)
+print(f"cert slots in DSM:     {len(certs)}  (wildcard + decoy; more = orphan bug)")
+all_fresh = True
+for name, path in serving.items():
+    f = fp(path)
+    fresh = "NEW cert" if f == fp_live else "OLD cert"
+    all_fresh = all_fresh and f == fp_live
+    print(f"  {name:18} [{fresh}]")
+reload_calls = open(reload_log).read() if os.path.exists(reload_log) else ""
+nginx_restarted = "restart nginx" in reload_calls
+print(f"  nginx restarted:   {nginx_restarted}")
+decoy_ok = (
+    fp("/usr/syno/etc/certificate/_archive/guiSlot/cert.pem") == fp_decoy
+    and fp("/usr/syno/etc/certificate/ReverseProxy/decoy/cert.pem") == fp_decoy)
+print(f"  GUI-made decoy cert untouched: {decoy_ok}")
+ok = (all_fresh and fp_live != fp_before and len(certs) == 2
+      and cron_rc == 0 and nginx_restarted and decoy_ok)
 print("\nRESULT:", "PASS — renewal replaced the bound slot in place"
       if ok else "FAIL — DSM still serves the pre-renewal certificate")
 sys.exit(0 if ok else 1)
