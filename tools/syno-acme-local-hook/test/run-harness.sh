@@ -39,6 +39,10 @@ ACME_HOME="$WORK/test-acme-home"
 export SYNO_MOCK_STATE="$WORK/mock-state.json"
 export SYNO_MOCK_LOG="$WORK/mock-synowebapi.log"
 DOMAIN="site.dfv.test"
+# The wildcard is the PRIMARY domain, as on the production NAS: every
+# acme.sh path then contains a literal '*' (.../*.site.dfv.test_ecc/...),
+# which real DSM rejects unless the hook stages files under plain names.
+CERTNAME="*.site.dfv.test"
 DESC="wildcard-test"
 PEBBLE_VERSION="v2.6.0"
 export no_proxy="127.0.0.1,localhost" NO_PROXY="127.0.0.1,localhost"
@@ -113,17 +117,17 @@ cp "$HOOK_FILE" "$ACME_HOME/deploy/synology_dsm_local.sh"
 ACME="$ACME_HOME/acme.sh"
 
 # ---- issue wildcard cert (real ACME, dns-01) -------------------------------
-say "issuing $DOMAIN + *.$DOMAIN via Pebble"
+say "issuing $CERTNAME + $DOMAIN via Pebble (wildcard primary)"
 "$ACME" --home "$ACME_HOME" --server https://127.0.0.1:14000/dir \
   --ca-bundle "$WORK/pebble-https.pem" \
-  --issue --dns dns_cts -d "$DOMAIN" -d "*.$DOMAIN" \
+  --issue --dns dns_cts -d "$CERTNAME" -d "$DOMAIN" \
   --dnssleep 2 --keylength ec-256 --log "$ACME_HOME/acme.log" >/dev/null 2>&1 \
   || { echo "ISSUE FAILED"; tail -30 "$ACME_HOME/acme.log"; exit 2; }
 
 # ---- initial deploy, as the operator runs it (env vars set) ----------------
 say "initial deploy with SYNO_Certificate=$DESC SYNO_Create=1"
 SYNO_Certificate="$DESC" SYNO_Create=1 \
-  "$ACME" --home "$ACME_HOME" --deploy -d "$DOMAIN" --ecc \
+  "$ACME" --home "$ACME_HOME" --deploy -d "$CERTNAME" --ecc \
   --deploy-hook synology_dsm_local \
   || { echo "INITIAL DEPLOY FAILED"; exit 2; }
 
@@ -154,7 +158,7 @@ grep -E "Deploy|error|Error" "$WORK/cron.log" | tail -5
 # ---- verdict ---------------------------------------------------------------
 say "verdict"
 FP_LIVE=$(openssl x509 -noout -fingerprint -sha256 \
-  -in "$ACME_HOME/${DOMAIN}_ecc/${DOMAIN}.cer" | cut -d= -f2)
+  -in "$ACME_HOME/${CERTNAME}_ecc/${CERTNAME}.cer" | cut -d= -f2)
 python3 - "$FP_LIVE" "$CRON_RC" "$FP_BEFORE" <<'EOF'
 import json, os, sys
 fp_live, cron_rc, fp_before = sys.argv[1], int(sys.argv[2]), sys.argv[3]

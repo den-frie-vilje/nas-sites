@@ -82,14 +82,19 @@ synology_dsm_local_deploy() {
     _debug _cca        "$_cca"
     _debug _cfullchain "$_cfullchain"
 
-    # Capability probe — fail clearly if we're not on DSM or synowebapi
-    # isn't reachable.
-    if [ ! -x /usr/syno/bin/synowebapi ]; then
-        _err "synology_dsm_local: /usr/syno/bin/synowebapi not found — this hook only works on DSM."
+    # Capability probe — root first: DSM makes synowebapi executable only
+    # by root, so for a non-root user the -x test below fails even though
+    # the binary exists, and "not found" would point the operator at the
+    # wrong problem. Note acme.sh refuses plain `sudo acme.sh`; use a root
+    # shell (sudo su / sudo -i) and pass --home, since root's default
+    # acme.sh home is /root/.acme.sh, not the installing user's.
+    if [ "$(id -u)" -ne 0 ]; then
+        _err "synology_dsm_local: must run as root. acme.sh refuses plain sudo; use a root shell:"
+        _err "  sudo su -c \"<acme-home>/acme.sh --home <acme-home> --deploy -d '$_cdomain' --deploy-hook synology_dsm_local\""
         return 1
     fi
-    if [ "$(id -u)" -ne 0 ]; then
-        _err "synology_dsm_local: must run as root (try: sudo acme.sh ...)"
+    if [ ! -x /usr/syno/bin/synowebapi ]; then
+        _err "synology_dsm_local: /usr/syno/bin/synowebapi not found — this hook only works on DSM."
         return 1
     fi
 
@@ -129,6 +134,28 @@ synology_dsm_local_deploy() {
         return 1
     fi
 
+    # Stage the files under plain names before importing. Over HTTP the
+    # import handler only ever receives uploaded temp files with tame
+    # names; handed acme.sh's real paths it rejects wildcard certs, whose
+    # primary name puts a literal '*' in every path
+    # (.../*.example.com_ecc/*.example.com.key), with 5511 "illegal key
+    # file" (observed on DSM 7.2.2; codes per zaxbux/syno-acme:
+    # 5510 = illegal certificate file, 5511 = illegal key file,
+    # 5512 = illegal intermediate file).
+    _tmp_dir="$(mktemp -d /tmp/synology_dsm_local.XXXXXX)" || {
+        _err "synology_dsm_local: mktemp failed"
+        return 1
+    }
+    chmod 700 "$_tmp_dir"
+    if ! cp "$_ckey" "$_tmp_dir/privkey.pem" \
+        || ! cp "$_ccert" "$_tmp_dir/cert.pem"; then
+        _err "synology_dsm_local: failed to stage cert files into $_tmp_dir"
+        rm -rf "$_tmp_dir"
+        return 1
+    fi
+    [ -f "$_cca" ] && cp "$_cca" "$_tmp_dir/chain.pem"
+    chmod 600 "$_tmp_dir"/*.pem
+
     # Build the import call. Args:
     #   key_tmp     = private key file
     #   cert_tmp    = leaf cert file
@@ -142,20 +169,23 @@ synology_dsm_local_deploy() {
         api=SYNO.Core.Certificate
         method=import
         version=1
-        "key_tmp=$_ckey"
-        "cert_tmp=$_ccert"
+        "key_tmp=$_tmp_dir/privkey.pem"
+        "cert_tmp=$_tmp_dir/cert.pem"
         "as_default=$_as_default"
     )
-    [ -f "$_cca" ] && _import_args+=("inter_cert_tmp=$_cca")
+    [ -f "$_tmp_dir/chain.pem" ] && _import_args+=("inter_cert_tmp=$_tmp_dir/chain.pem")
     [ -n "$_existing_id" ] && _import_args+=("id=$_existing_id")
     [ -n "$_syno_desc" ]   && _import_args+=("desc=$_syno_desc")
 
     _info "synology_dsm_local: synowebapi --exec-fastwebapi ${_import_args[*]}"
-    _result=$(/usr/syno/bin/synowebapi --exec-fastwebapi "${_import_args[@]}" 2>&1) || {
+    _result=$(/usr/syno/bin/synowebapi --exec-fastwebapi "${_import_args[@]}" 2>&1)
+    _import_rc=$?
+    rm -rf "$_tmp_dir"
+    if [ "$_import_rc" -ne 0 ]; then
         _err "synology_dsm_local: cert import failed"
         _err "$_result"
         return 1
-    }
+    fi
 
     # synowebapi returns {"success":true,...} on success and {"success":false,
     # "error":{"code":N,...}} on failure. Refuse to silently treat anything

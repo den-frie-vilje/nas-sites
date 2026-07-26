@@ -101,6 +101,17 @@ def main():
     if api == "SYNO.Core.Certificate" and method == "import":
         cert_file = params.get("cert_tmp", "")
         key_file = params.get("key_tmp", "")
+        # Real DSM rejects *_tmp paths containing glob characters — seen on
+        # DSM 7.2.2 with a wildcard-primary cert, whose acme.sh paths all
+        # contain a literal '*' (.../*.example.com_ecc/*.example.com.key).
+        # Error codes per zaxbux/syno-acme: 5510 illegal certificate file,
+        # 5511 illegal key file, 5512 illegal intermediate file. Key is
+        # checked first, matching the observed 5511.
+        for param, code in (("key_tmp", 5511), ("cert_tmp", 5510),
+                            ("inter_cert_tmp", 5512)):
+            path = params.get(param, "")
+            if any(ch in path for ch in "*?["):
+                emit({"error": {"code": code}, "success": False}, ok=False)
         if not (os.path.isfile(cert_file) and os.path.isfile(key_file)):
             emit({"error": {"code": 117}, "success": False}, ok=False)
         cn, fingerprint, valid_from, valid_till = cert_info(cert_file)
