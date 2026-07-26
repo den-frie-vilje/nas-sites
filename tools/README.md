@@ -22,7 +22,7 @@ sudo /volume1/docker/nas-sites/repo/tools/<script>.sh
 | [`bootstrap-deploy-user.sh`](bootstrap-deploy-user.sh) | Once per fresh NAS. Creates the `deploy` user, the `docker` group, and applies socket ownership. |
 | [`install-boot-tasks.sh`](install-boot-tasks.sh) | Once per fresh NAS, after the deploy-user bootstrap. Walks through the DSM Task Scheduler GUI clicks needed to persist `docker.sock` group ownership across reboots. |
 | [`bootstrap-site.sh`](bootstrap-site.sh) | Once per `(site, environment)`. Prompts for domain, repo, branch, etc.; creates dirs, clones the site repo, drops the per-site agent config, opens `$EDITOR` on the secrets files. |
-| [`syno-acme-local-hook/install.sh`](syno-acme-local-hook/install.sh) | Once per NAS, optional. Installs an acme.sh deploy hook that imports renewed certs into DSM via local `synowebapi`, removing the on-disk DSM admin credential the upstream hook needs. See [docs/SYNOTOOLS-HARDENING.md](../docs/SYNOTOOLS-HARDENING.md). |
+| [`syno-acme-local-hook/install.sh`](syno-acme-local-hook/install.sh) | Once per NAS, optional. Installs an acme.sh deploy hook that installs renewed certs into the DSM cert store locally, removing the on-disk DSM admin credential the upstream hook needs. See [syno-acme-local-hook/README.md](syno-acme-local-hook/README.md). |
 
 ## Conventions
 

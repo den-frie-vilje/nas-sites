@@ -8,17 +8,15 @@ Emulates the two calls the synology_dsm_local acme.sh deploy hook makes:
       key_tmp=<file> cert_tmp=<file> [inter_cert_tmp=<file>] [id=<id>] \
       [desc=<name>] as_default=true|false
 
-Behaviour mirrors DSM 7.2 as observed via the upstream acme.sh synology_dsm
-hook and zaxbux/syno-acme:
+Behaviour mirrors DSM 7.2.2:
 
 - list returns {"data": {"certificates": [...]}, "success": true} with each
   certificate object's keys in ALPHABETICAL order (desc before id), pretty
   printed, as the real binary does.
-- import with id= replaces that slot in place, keeping its services binding.
-- import without id= creates a NEW slot with a fresh random id and NO
-  services bound (this is exactly what real DSM does, and is the behaviour
-  that strands renewals in an orphan slot).
-- Unknown id => {"success": false, "error": {"code": 5507}}.
+- import with id= always fails with error 5511; replacement does not work
+  through --exec-fastwebapi.
+- import without id= creates a NEW slot with a fresh random id, NO services
+  bound, and an _archive/<id>/ directory holding the four PEMs.
 
 State is a JSON file at $SYNO_MOCK_STATE (default /usr/syno/mock-state.json).
 Every invocation is appended to $SYNO_MOCK_LOG for later assertions.
@@ -99,13 +97,10 @@ def main():
         emit({"data": {"certificates": state["certificates"]}, "success": True})
 
     if api == "SYNO.Core.Certificate" and method == "import":
-        # On-NAS probing of DSM 7.2.2 (July 2026) established that import
-        # with id= — replacing an existing slot — ALWAYS fails with error
-        # 5511 through the local --exec-fastwebapi path, regardless of
-        # file location, file naming, or key format (RSA/SEC1/PKCS#8 all
-        # create fine, and the same files fail the moment id= is added).
-        # Only creation (no id) works locally. The mock reproduces that
-        # verbatim so any hook that tries to replace via the API fails
+        # DSM 7.2.2: import with id= (replacing an existing slot) always
+        # fails with error 5511 through --exec-fastwebapi, regardless of
+        # file location, naming, or key format; only creation (no id)
+        # works locally. Any hook that replaces via the API must fail
         # here the way it fails on a real NAS.
         if params.get("id", ""):
             emit({"error": {"code": 5511}, "success": False}, ok=False)

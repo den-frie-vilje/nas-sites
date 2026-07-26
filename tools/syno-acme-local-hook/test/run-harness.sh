@@ -2,20 +2,19 @@
 # End-to-end test rig for the synology_dsm_local acme.sh deploy hook,
 # without a DSM box: real acme.sh + real ACME wildcard issuance against
 # Pebble (Let's Encrypt's test CA) with dns-01 validation via
-# pebble-challtestsrv, deploying into a mock synowebapi (see
-# mock-synowebapi in this directory) that reproduces DSM 7.2 cert-store
-# semantics — including the two behaviours that matter:
+# pebble-challtestsrv, deploying into a mock synowebapi and a fake
+# cert-store tree that reproduce the DSM 7.2.2 constraints:
 #
-#   - import with id= replaces a slot in place, keeping service bindings;
-#     import without id= creates a NEW slot with nothing bound to it;
-#   - list output prints object keys alphabetically, so "desc" precedes
-#     "id" (this order broke the hook's original id lookup).
+#   - import with id= always fails (error 5511); only creation works,
+#     and a created slot materialises as an _archive/<id>/ PEM dir;
+#   - list output prints object keys alphabetically ("desc" before "id").
 #
-# The scenario is the production incident of July 2026: operator deploys
-# once with SYNO_* env vars set, binds services to the slot in the DSM
-# GUI, then DSM Task Scheduler renews with a CLEAN environment. The rig
-# asserts that after that renewal the bound slot serves the renewed
-# certificate and no orphan slot exists.
+# The scenario: operator deploys once with SYNO_* env vars set, binds
+# services to the slot in the DSM GUI, then DSM Task Scheduler renews
+# with a CLEAN environment. The rig asserts that after that renewal the
+# bound slot and its service copies serve the renewed certificate, nginx
+# is reloaded and never restarted, unrelated certificates are untouched,
+# and no orphan slot exists.
 #
 # Requirements: root in a DISPOSABLE container (it writes a mock to
 # /usr/syno/bin/synowebapi), bash, curl, git, openssl, python3, and
@@ -81,8 +80,8 @@ mkdir -p /usr/syno/bin
 cp "$RIG/mock-synowebapi" /usr/syno/bin/synowebapi
 chmod +x /usr/syno/bin/synowebapi
 # Stub for the reload tooling the replace path calls; it logs the call so
-# the verdict can assert nginx was reloaded (never restarted — a unit
-# restart cascades into package jobs and deadlocked a live NAS).
+# the verdict can assert nginx was reloaded and never restarted (a unit
+# restart cascades into package jobs and can deadlock the package system).
 RELOAD_LOG="$WORK/reload.log"; rm -f "$RELOAD_LOG"
 cat > /usr/syno/bin/synow3tool <<EOF
 #!/bin/sh
