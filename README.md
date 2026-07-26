@@ -49,10 +49,10 @@ mutating step.
 - **[`install-boot-tasks.sh`](tools/install-boot-tasks.sh)** — walk
   through the DSM Task Scheduler GUI clicks needed to persist
   `docker.sock` ownership across reboots.
-- **[`syno-acme-local-hook/`](tools/syno-acme-local-hook/)** — drop-in
-  `acme.sh` deploy hook that imports renewed certs into DSM via local
-  `synowebapi`, removing the on-disk admin credential the upstream hook
-  needs. See [docs/SYNOTOOLS-HARDENING.md](docs/SYNOTOOLS-HARDENING.md).
+- **[`syno-acme-local-hook/`](tools/syno-acme-local-hook/)** — `acme.sh`
+  deploy hook that installs renewed certs into the DSM cert store
+  locally, removing the on-disk admin credential the upstream hook
+  needs. See its [README](tools/syno-acme-local-hook/README.md).
 
 ## Architecture
 
@@ -176,9 +176,8 @@ root-equivalent), see
   (DNS, certs, networks, vhosts).
 - **[BRANCH-PROTECTION.md](docs/BRANCH-PROTECTION.md)** — required GitHub
   repo settings (signed commits, force-push block, Code Owners review).
-- **[SYNOTOOLS-HARDENING.md](docs/SYNOTOOLS-HARDENING.md)** — Synology-
-  specific tooling choices: synowebapi cert-import hook, what was
-  deliberately not scripted and why.
+- **[DSM-AUTOMATION.md](docs/DSM-AUTOMATION.md)** — which DSM
+  operations are scripted and which stay in the GUI.
 
 ## Roadmap
 

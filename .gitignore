@@ -10,3 +10,6 @@ shared/webhook/webhook.env
 
 # Test-rig dependencies and state fetched at run time
 tools/syno-acme-local-hook/test/work/
+
+# Python bytecode from the test rig
+__pycache__/

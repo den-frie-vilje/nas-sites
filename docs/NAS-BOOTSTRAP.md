@@ -22,8 +22,9 @@ That's it for prerequisites.
    ```sh
    sudo /volume1/docker/nas-sites/repo/tools/syno-acme-local-hook/install.sh
    ```
-   See [SYNOTOOLS-HARDENING.md](SYNOTOOLS-HARDENING.md) for the full
-   setup including the migration steps for an existing acme.sh install.
+   See the hook's
+   [README](../tools/syno-acme-local-hook/README.md) for the full setup
+   including the switch-over steps for an existing acme.sh install.
 3. **Shared docker network**:
    ```sh
    sudo docker network create nas-deploy
@@ -37,7 +38,7 @@ That's it for prerequisites.
    Caddy-container loopback port, bind the `*.stage.*` or `*.prod.*`
    wildcard cert. Staging vhost adds `X-Robots-Tag: noindex, nofollow`.
    This step is GUI-only — Web Station's APIs are too unstable across
-   DSM versions to script (see SYNOTOOLS-HARDENING.md §Web Station).
+   DSM versions to script (see [DSM-AUTOMATION.md](DSM-AUTOMATION.md)).
 
 ## Per-site onboarding
 

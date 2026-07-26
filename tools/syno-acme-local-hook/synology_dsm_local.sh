@@ -7,21 +7,19 @@
 # acme.sh's account.conf — i.e. an on-disk credential with full DSM admin
 # rights. This hook works entirely locally as root. No on-disk credential.
 #
-# HOW (established by on-NAS probing on DSM 7.2.2, July 2026 — see
-# docs/SYNOTOOLS-HARDENING.md for the probe record):
+# HOW (constraints verified on DSM 7.2.2; see README.md in this directory):
 #
 #   - Finding and CREATING cert slots works through the local synowebapi
 #     binary (SYNO.Core.Certificate.CRT list / SYNO.Core.Certificate
 #     import without id).
 #   - REPLACING an existing slot via synowebapi import id=... always
-#     fails with {"error":{"code":5511}} on DSM 7.2.2, whatever the file
-#     location, name, or key format. Replacement is therefore done the
-#     way the DSM community has done it for years: overwrite the PEM
-#     files in /usr/syno/etc/certificate/_archive/<id>/, propagate to
+#     fails with {"error":{"code":5511}}, whatever the file location,
+#     name, or key format. Replacement therefore overwrites the PEM
+#     files in /usr/syno/etc/certificate/_archive/<id>/, propagates to
 #     every service directory holding a copy of the same cert (matched
 #     by fingerprint under /usr/syno/etc/certificate and
-#     /usr/local/etc/certificate), regenerate the web config with
-#     synow3tool --gen-all, and restart nginx. Service bindings live in
+#     /usr/local/etc/certificate), regenerates the web config with
+#     synow3tool --gen-all, and reloads nginx. Service bindings live in
 #     the _archive/INFO file keyed by slot id and are untouched.
 #
 # Use exactly like the stock hook:
@@ -143,18 +141,14 @@ _syno_replace_slot_files() {
         return 1
     fi
 
-    # Regenerate nginx config from the updated files and RELOAD nginx —
+    # Regenerate nginx config from the updated files and RELOAD nginx,
     # never restart it. A reload is how DSM itself applies cert changes
-    # (the nginx unit's ExecReload is `synow3tool --nginx=reload`), and it
-    # re-reads cert files without creating any systemd jobs. A full
-    # `restart nginx` queues a unit restart that DSM's service handlers
-    # amplify into a cascade of package start/stop jobs; on a live NAS
-    # (July 2026) that cascade deadlocked against a concurrent
-    # ContainerManager stop whose script synchronously waited on a
-    # queued-behind-it WebStation start job, wedging 20 jobs including
-    # nginx and Web Station. gen-all failure is only a warning (not all
-    # DSM setups have web portals); a failed reload is an error the
-    # operator must see, even though the store is updated.
+    # (the nginx unit's ExecReload is `synow3tool --nginx=reload`) and
+    # creates no systemd jobs; a unit restart cascades into package
+    # start/stop jobs and can deadlock the package system. gen-all
+    # failure is only a warning (not all DSM setups have web portals); a
+    # failed reload is an error the operator must see, even though the
+    # store is updated.
     if [ ! -x /usr/syno/bin/synow3tool ]; then
         _err "synology_dsm_local: certificate files updated but /usr/syno/bin/synow3tool is missing."
         _err "Reload nginx manually to serve the new certificate."
