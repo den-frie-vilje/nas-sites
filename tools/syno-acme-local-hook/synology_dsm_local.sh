@@ -221,8 +221,9 @@ synology_dsm_local_deploy() {
     # shell (sudo su / sudo -i) and pass --home, since root's default
     # acme.sh home is /root/.acme.sh, not the installing user's.
     if [ "$(id -u)" -ne 0 ]; then
+        _syno_home="${LE_WORKING_DIR:-<acme-home>}"
         _err "synology_dsm_local: must run as root. acme.sh refuses plain sudo; use a root shell:"
-        _err "  sudo su -c \"<acme-home>/acme.sh --home <acme-home> --deploy -d '$_cdomain' --deploy-hook synology_dsm_local\""
+        _err "  sudo su -c \"$_syno_home/acme.sh --home $_syno_home --deploy -d '$_cdomain' --ecc --deploy-hook synology_dsm_local\""
         return 1
     fi
     if [ ! -x /usr/syno/bin/synowebapi ]; then
