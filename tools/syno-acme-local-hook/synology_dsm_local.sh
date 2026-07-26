@@ -82,14 +82,19 @@ synology_dsm_local_deploy() {
     _debug _cca        "$_cca"
     _debug _cfullchain "$_cfullchain"
 
-    # Capability probe — fail clearly if we're not on DSM or synowebapi
-    # isn't reachable.
-    if [ ! -x /usr/syno/bin/synowebapi ]; then
-        _err "synology_dsm_local: /usr/syno/bin/synowebapi not found — this hook only works on DSM."
+    # Capability probe — root first: DSM makes synowebapi executable only
+    # by root, so for a non-root user the -x test below fails even though
+    # the binary exists, and "not found" would point the operator at the
+    # wrong problem. Note acme.sh refuses plain `sudo acme.sh`; use a root
+    # shell (sudo su / sudo -i) and pass --home, since root's default
+    # acme.sh home is /root/.acme.sh, not the installing user's.
+    if [ "$(id -u)" -ne 0 ]; then
+        _err "synology_dsm_local: must run as root. acme.sh refuses plain sudo; use a root shell:"
+        _err "  sudo su -c \"<acme-home>/acme.sh --home <acme-home> --deploy -d '$_cdomain' --deploy-hook synology_dsm_local\""
         return 1
     fi
-    if [ "$(id -u)" -ne 0 ]; then
-        _err "synology_dsm_local: must run as root (try: sudo acme.sh ...)"
+    if [ ! -x /usr/syno/bin/synowebapi ]; then
+        _err "synology_dsm_local: /usr/syno/bin/synowebapi not found — this hook only works on DSM."
         return 1
     fi
 
