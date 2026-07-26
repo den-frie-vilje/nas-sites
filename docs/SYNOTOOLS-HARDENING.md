@@ -130,14 +130,27 @@ version caused it, both reproduced and fixed via the test rig in
    resolves to the slot it replaced, refusing to report success otherwise.
 
 A third failure surfaced during recovery, on the first correctly-formed
-import: DSM answered `{"error":{"code":5511}}`. The import handler
-rejects `*_tmp` file paths containing a literal `*`, and a wildcard
-cert whose primary name is the wildcard puts one in every acme.sh path
-(`.../*.example.com_ecc/*.example.com.key`). Over HTTP the handler only
-ever sees uploaded temp files with tame names, which is why the same
-PEM content imports fine through the GUI. The hook now stages key,
-cert, and chain into a `mktemp -d` directory under plain names before
-calling the import. Error codes, per the zaxbux/syno-acme reference:
+import: DSM answered `{"error":{"code":5511}}`. On-NAS probing (four
+self-contained imports from different locations and key formats) pinned
+down two path rules in the DSM 7.2.2 import handler, each sufficient to
+produce that error:
+
+- `*_tmp` paths containing a literal `*` are rejected, and a wildcard
+  cert whose primary name is the wildcard puts one in every acme.sh
+  path (`.../*.example.com_ecc/*.example.com.key`);
+- `*_tmp` paths under the calling shell's `/tmp` are rejected — the
+  handler evidently runs with a private `/tmp` namespace, so files
+  staged there are invisible to it, and the failed open surfaces as
+  "illegal key file".
+
+Key format is not a factor: RSA, SEC1 EC, and PKCS#8 EC keys all import
+fine from a plain-named path under the acme.sh home. Over HTTP the
+handler only ever sees uploaded temp files with tame names in its own
+namespace, which is why the same PEM content imports fine through the
+GUI. The hook now stages key, cert, and chain under plain names into a
+`mktemp -d` directory next to the acme.sh home (the parent of the
+cert's own directory) before calling the import, and removes it as soon
+as synowebapi returns. Error codes, per the zaxbux/syno-acme reference:
 5510 illegal certificate file, 5511 illegal key file, 5512 illegal
 intermediate file.
 

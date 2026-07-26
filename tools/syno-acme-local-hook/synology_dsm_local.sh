@@ -134,16 +134,25 @@ synology_dsm_local_deploy() {
         return 1
     fi
 
-    # Stage the files under plain names before importing. Over HTTP the
-    # import handler only ever receives uploaded temp files with tame
-    # names; handed acme.sh's real paths it rejects wildcard certs, whose
-    # primary name puts a literal '*' in every path
-    # (.../*.example.com_ecc/*.example.com.key), with 5511 "illegal key
-    # file" (observed on DSM 7.2.2; codes per zaxbux/syno-acme:
-    # 5510 = illegal certificate file, 5511 = illegal key file,
-    # 5512 = illegal intermediate file).
-    _tmp_dir="$(mktemp -d /tmp/synology_dsm_local.XXXXXX)" || {
-        _err "synology_dsm_local: mktemp failed"
+    # Stage the files under plain names, in a directory NEXT TO the
+    # acme.sh home, before importing. Two DSM 7.2.2 handler behaviours
+    # force this, both established by on-NAS probing (July 2026):
+    #
+    #   - paths containing a literal '*' are rejected, and a wildcard
+    #     cert whose primary name is the wildcard has one in every
+    #     acme.sh path (.../*.example.com_ecc/*.example.com.key);
+    #   - paths under the calling shell's /tmp are rejected — the import
+    #     handler evidently runs with a private /tmp namespace, so files
+    #     staged there are invisible to it.
+    #
+    # Both failures surface as {"error":{"code":5511}}; codes per
+    # zaxbux/syno-acme: 5510 = illegal certificate file, 5511 = illegal
+    # key file, 5512 = illegal intermediate file. The same PEMs import
+    # fine from a plain-named path under the acme.sh home, so stage
+    # there: the parent directory of the cert's own directory.
+    _stage_parent="$(dirname "$(dirname "$_ckey")")"
+    _tmp_dir="$(mktemp -d "$_stage_parent/.synology_dsm_local.XXXXXX")" || {
+        _err "synology_dsm_local: mktemp failed under $_stage_parent"
         return 1
     }
     chmod 700 "$_tmp_dir"
