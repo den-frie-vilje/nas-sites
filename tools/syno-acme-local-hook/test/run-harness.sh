@@ -80,18 +80,16 @@ mkdir -p /usr/syno/etc/certificate/_archive /usr/local/etc/certificate
 mkdir -p /usr/syno/bin
 cp "$RIG/mock-synowebapi" /usr/syno/bin/synowebapi
 chmod +x /usr/syno/bin/synowebapi
-# Stubs for the reload tooling the replace path calls; they log the call so
-# the verdict can assert nginx was actually restarted.
+# Stub for the reload tooling the replace path calls; it logs the call so
+# the verdict can assert nginx was reloaded (never restarted — a unit
+# restart cascades into package jobs and deadlocked a live NAS).
 RELOAD_LOG="$WORK/reload.log"; rm -f "$RELOAD_LOG"
 cat > /usr/syno/bin/synow3tool <<EOF
 #!/bin/sh
 echo "synow3tool \$*" >> "$RELOAD_LOG"
 EOF
-cat > /usr/syno/bin/synosystemctl <<EOF
-#!/bin/sh
-echo "synosystemctl \$*" >> "$RELOAD_LOG"
-EOF
-chmod +x /usr/syno/bin/synow3tool /usr/syno/bin/synosystemctl
+chmod +x /usr/syno/bin/synow3tool
+rm -f /usr/syno/bin/synosystemctl
 
 # ---- pebble + challtestsrv -------------------------------------------------
 if [ ! -f "$WORK/pebble-https.pem" ]; then
@@ -238,14 +236,15 @@ for name, path in serving.items():
     all_fresh = all_fresh and f == fp_live
     print(f"  {name:18} [{fresh}]")
 reload_calls = open(reload_log).read() if os.path.exists(reload_log) else ""
-nginx_restarted = "restart nginx" in reload_calls
-print(f"  nginx restarted:   {nginx_restarted}")
+nginx_reloaded = "--nginx=reload" in reload_calls
+no_restart = "restart" not in reload_calls
+print(f"  nginx reloaded (no restart): {nginx_reloaded and no_restart}")
 decoy_ok = (
     fp("/usr/syno/etc/certificate/_archive/guiSlot/cert.pem") == fp_decoy
     and fp("/usr/syno/etc/certificate/ReverseProxy/decoy/cert.pem") == fp_decoy)
 print(f"  GUI-made decoy cert untouched: {decoy_ok}")
 ok = (all_fresh and fp_live != fp_before and len(certs) == 2
-      and cron_rc == 0 and nginx_restarted and decoy_ok)
+      and cron_rc == 0 and nginx_reloaded and no_restart and decoy_ok)
 print("\nRESULT:", "PASS — renewal replaced the bound slot in place"
       if ok else "FAIL — DSM still serves the pre-renewal certificate")
 sys.exit(0 if ok else 1)

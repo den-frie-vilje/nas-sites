@@ -143,21 +143,30 @@ _syno_replace_slot_files() {
         return 1
     fi
 
-    # Regenerate nginx config from the updated files and restart it so
-    # the new cert is actually served. gen-all failure is only a warning
-    # (not all DSM setups have web portals); a failed nginx restart is an
-    # error the operator must see, even though the store is updated.
-    if [ -x /usr/syno/bin/synow3tool ]; then
-        /usr/syno/bin/synow3tool --gen-all >/dev/null 2>&1 \
-            || _err "synology_dsm_local: warning: synow3tool --gen-all failed"
+    # Regenerate nginx config from the updated files and RELOAD nginx —
+    # never restart it. A reload is how DSM itself applies cert changes
+    # (the nginx unit's ExecReload is `synow3tool --nginx=reload`), and it
+    # re-reads cert files without creating any systemd jobs. A full
+    # `restart nginx` queues a unit restart that DSM's service handlers
+    # amplify into a cascade of package start/stop jobs; on a live NAS
+    # (July 2026) that cascade deadlocked against a concurrent
+    # ContainerManager stop whose script synchronously waited on a
+    # queued-behind-it WebStation start job, wedging 20 jobs including
+    # nginx and Web Station. gen-all failure is only a warning (not all
+    # DSM setups have web portals); a failed reload is an error the
+    # operator must see, even though the store is updated.
+    if [ ! -x /usr/syno/bin/synow3tool ]; then
+        _err "synology_dsm_local: certificate files updated but /usr/syno/bin/synow3tool is missing."
+        _err "Reload nginx manually to serve the new certificate."
+        return 1
     fi
-    if [ -x /usr/syno/bin/synosystemctl ]; then
-        /usr/syno/bin/synosystemctl restart nginx || {
-            _err "synology_dsm_local: certificate files updated but nginx restart failed."
-            _err "Restart it manually: /usr/syno/bin/synosystemctl restart nginx"
-            return 1
-        }
-    fi
+    /usr/syno/bin/synow3tool --gen-all >/dev/null 2>&1 \
+        || _err "synology_dsm_local: warning: synow3tool --gen-all failed"
+    /usr/syno/bin/synow3tool --nginx=reload || {
+        _err "synology_dsm_local: certificate files updated but nginx reload failed."
+        _err "Reload manually: /usr/syno/bin/synow3tool --nginx=reload"
+        return 1
+    }
     return 0
 }
 
