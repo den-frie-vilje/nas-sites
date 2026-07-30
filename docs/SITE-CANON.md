@@ -65,16 +65,26 @@ what is deployed. Verify deploys against the origin host, not the CDN apex.
 Probe, repository: `src/app.html` contains `name="git-sha"`.
 Probe, staging origin: the page serves a non-empty git-sha meta.
 
-## SC-5: reusable workflow pinned by tag — proposed
+## SC-5: reusable workflow pinned by the newest tag — adopted
 
 Site workflows call `build-and-sign.yml` pinned to a release tag of this
 repository, not `@main`. A floating branch reference is unreviewable and is a
-weak point for a workflow that signs images. Rollout: tag this repository,
-then a campaign moves each caller to the tag; from then on tag bumps arrive as
-reviewable fleet PRs.
+weak point for a workflow that signs images. `v1` is the first tag; the tag
+moves only for deliberate, reviewable releases.
 
-Probe, repository: every `uses:` of `build-and-sign.yml` references a tag.
-Until the first tag exists this probe reports WARN, not FAIL.
+A tag pin is only safe if something measures its freshness, so the probe
+compares each pin against the newest tag rather than merely checking that a
+tag is used. A pin left behind a later release shows as WARN, which is the
+signal to open a bump. If that bump traffic ever becomes real work, a
+self-hosted Renovate delivering bump PRs is the documented next step.
+
+Probe, repository: every `uses:` of `build-and-sign.yml` references the newest
+tag on this repository. A tag that is not the newest is WARN; a branch
+reference is FAIL. The probe fails closed: an unreadable workflow list or no
+caller at all is FAIL, never PASS. Before any tag exists the probe reports
+WARN, since there is nothing to pin to.
+
+Fleet rollout is campaign 2 (issue #34).
 
 ## SC-6: canon mirror — proposed
 

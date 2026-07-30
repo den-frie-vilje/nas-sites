@@ -17,6 +17,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 SITES_FILE="$HERE/canon-sites.txt"
 FAILS=0
 
+# Newest release tag on this repository, for the SC-5 pin-freshness probe.
+# sort -V so v10 beats v9; empty when no tag has been released yet.
+LATEST_TAG="$(gh api repos/den-frie-vilje/nas-sites/tags --jq '.[].name' 2>/dev/null | sort -V | tail -1 || true)"
+
 # fetch_file <repo> <path> -> file body on stdout, empty if absent
 fetch_file() {
   gh api "repos/$1/contents/$2?ref=staging" --jq .content 2>/dev/null | base64 -d 2>/dev/null || true
@@ -83,16 +87,39 @@ while read -r REPO STAGE_HOST _PROD_HOST; do
     verdict SC-4 PASS "git-sha meta in repo and populated on staging origin"
   fi
 
-  # SC-5 reusable workflow pinned by tag (WARN until the first tag exists)
+  # SC-5 reusable workflow pinned by the newest nas-sites tag.
+  # A pin that is a tag but not the newest is WARN, so a pin cannot rot
+  # unseen; a branch pin is FAIL once any tag exists.
   WFS="$(gh api "repos/$REPO/contents/.github/workflows?ref=staging" --jq '.[].name' 2>/dev/null || true)"
-  PIN_STATE="PASS"; PIN_DETAIL="all build-and-sign callers pin a tag"
-  for WF in $WFS; do
-    W="$(fetch_file "$REPO" ".github/workflows/$WF")"
-    if grep -q 'build-and-sign.yml@' <<<"$W" && ! grep -qE 'build-and-sign\.yml@v[0-9]' <<<"$W"; then
-      PIN_STATE="WARN"; PIN_DETAIL="$WF pins a branch, not a tag (no tag released yet)"
+  if [ -z "$LATEST_TAG" ]; then
+    verdict SC-5 WARN "no tag released on nas-sites yet, nothing to pin to"
+  else
+    PIN_STATE="PASS"; PIN_DETAIL="all build-and-sign callers pin $LATEST_TAG"
+    SEEN=0
+    for WF in $WFS; do
+      W="$(fetch_file "$REPO" ".github/workflows/$WF")"
+      for REF in $(grep -oE 'build-and-sign\.yml@[A-Za-z0-9._-]+' <<<"$W" | cut -d@ -f2); do
+        SEEN=$((SEEN + 1))
+        [ "$REF" = "$LATEST_TAG" ] && continue
+        if grep -qE '^v[0-9]' <<<"$REF"; then
+          [ "$PIN_STATE" != "FAIL" ] && {
+            PIN_STATE="WARN"
+            PIN_DETAIL="$WF pins $REF, behind the newest tag $LATEST_TAG"
+          }
+        else
+          PIN_STATE="FAIL"
+          PIN_DETAIL="$WF pins the branch '$REF', not a tag"
+        fi
+      done
+    done
+    # Fail closed: reading nothing is not conformance. An unreadable
+    # workflow list or a missing caller must not report PASS.
+    if [ "$SEEN" -eq 0 ]; then
+      PIN_STATE="FAIL"
+      PIN_DETAIL="no build-and-sign caller found (workflows unreadable or absent)"
     fi
-  done
-  verdict SC-5 "$PIN_STATE" "$PIN_DETAIL"
+    verdict SC-5 "$PIN_STATE" "$PIN_DETAIL"
+  fi
 
   # SC-6 canon mirror
   if [ -n "$(fetch_file "$REPO" "AGENTS.md")" ]; then
