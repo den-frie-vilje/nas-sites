@@ -33,6 +33,14 @@ The agent is not auto-updated at runtime. Edits to `nas-agent/deploy-agent.sh`
 in this repo only land on the NAS when an operator pulls and re-installs
 them.
 
+### Site canon (`docs/SITE-CANON.md`)
+
+- **[`docs/SITE-CANON.md`](docs/SITE-CANON.md)** — the numbered cross-site
+  patterns every docker-hosted site follows, each with a probe.
+- **[`tools/check-canon.sh`](tools/check-canon.sh)** — runs every probe
+  against every site in [`tools/canon-sites.txt`](tools/canon-sites.txt)
+  and prints the fleet scorecard. Read-only; needs gh, curl, jq.
+
 ### Operator scripts (`tools/`)
 
 Interactive scripts the operator runs by hand on the NAS. Every script
