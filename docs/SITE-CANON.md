@@ -104,3 +104,41 @@ trusted. An unmapped key is silently dropped on the editor's next save. No
 site carries the checker yet; reference method proven in the m-path build.
 
 Probe: none until the first implementation lands and names the script.
+
+## SC-8: a reachable editor sign-in — adopted
+
+A site whose CMS config names a `backend.base_url` must ship a stack that
+serves it. Sveltia builds its whole OAuth handshake from that value, asking for
+`${base_url}/auth` and then `${base_url}/callback`, so the path needs three
+things and all three are easy to have half of:
+
+1. **A proxy service** in `deploy/compose.staging.yml`
+   (`vencax/netlify-cms-github-oauth-provider`, digest-pinned, on the
+   per-project internal network). Its CSRF variable is `ORIGINS`, **plural** —
+   the singular makes the container crash on startup with "Cannot read property
+   'match' of undefined". Caddy depends on it with `required: false`, so a
+   broken sign-in cannot take the public page down with it.
+2. **A prefix-STRIPPING route**: `handle_path /auth/*`, never `handle`. The
+   upstream serves `/auth` and `/callback` at its own root, so a route that
+   forwards the prefix asks it for `/auth/auth` and 404s every sign-in.
+3. **The credentials documented** in `deploy/staging.env.example`
+   (`OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`), with the callback URL to
+   register. The real values live only in the NAS copy of the env file.
+
+Reference implementation: `chrishemmings.co.uk/deploy/`.
+
+**Why this is a clause and not a note.** It was missed on gosscounselling.co.uk
+for the whole build. The stack had been scaffolded before that site had a CMS
+and its compose file and Caddyfile both said so — "No CMS, no OAuth proxy —
+there is no app yet" — and stayed saying it after the CMS landed. Every file
+was individually correct. Nothing watched the seam between a file in `static/`
+and a file in `deploy/`, and the failure is invisible from the dev server,
+where Sveltia's local-repository mode needs no proxy at all. The site could not
+be edited on the only host it was configured for.
+
+Probe, repository: `scripts/check-deploy.ts` exists and is wired into the
+`check` script. It parses the CMS config's own `base_url` rather than
+matching on the literal `/auth`, so a site that mounts it elsewhere is still
+measured. Reference: gosscounselling.co.uk.
+Probe, staging origin: `/auth/auth` does not 404. It will redirect to GitHub
+or complain about credentials; either is proof something is listening.

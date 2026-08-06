@@ -128,6 +128,33 @@ while read -r REPO STAGE_HOST _PROD_HOST; do
     verdict SC-6 WARN "AGENTS.md absent (rollout pending, proposed pattern)"
   fi
 
+  # SC-8 a reachable editor sign-in. Only sites with a git-CMS are in scope,
+  # and the config itself is what says so — no site list to keep in step.
+  CMS_CFG="$(fetch_file "$REPO" "static/admin/config.yml")"
+  if [ -z "$CMS_CFG" ]; then
+    : # no CMS, nothing to sign in to
+  elif ! printf '%s' "$CMS_CFG" | grep -q "base_url:"; then
+    verdict SC-8 PASS "CMS present, no base_url — no proxy required"
+  else
+    SC8_STATE="PASS"; SC8_DETAIL="sign-in served: proxy, stripping route, documented credentials"
+    COMPOSE="$(fetch_file "$REPO" "deploy/compose.staging.yml")"
+    CADDY="$(fetch_file "$REPO" "deploy/Caddyfile.staging")"
+    ENVX="$(fetch_file "$REPO" "deploy/staging.env.example")"
+    if ! printf '%s' "$COMPOSE" | grep -qi "auth:"; then
+      SC8_STATE="FAIL"; SC8_DETAIL="compose.staging.yml declares no auth proxy; sign-in 404s"
+    elif ! printf '%s' "$CADDY" | grep -q "handle_path /auth/\*"; then
+      SC8_STATE="FAIL"
+      if printf '%s' "$CADDY" | grep -q "handle /auth/\*"; then
+        SC8_DETAIL="/auth routed with handle, which keeps the prefix; needs handle_path"
+      else
+        SC8_DETAIL="Caddyfile.staging routes nothing to /auth/*"
+      fi
+    elif ! printf '%s' "$ENVX" | grep -q "OAUTH_CLIENT_SECRET"; then
+      SC8_STATE="FAIL"; SC8_DETAIL="staging.env.example does not document the OAuth credentials"
+    fi
+    verdict SC-8 "$SC8_STATE" "$SC8_DETAIL"
+  fi
+
   echo
 done < "$SITES_FILE"
 
