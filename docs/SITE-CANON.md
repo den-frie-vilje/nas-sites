@@ -175,6 +175,24 @@ sudo docker compose \
 PULL-DEPLOY-MODEL.md §"Rotating Cloudflare / OAuth secrets" said of the
 force-recreate "Document this if it bites in practice." It bit.
 
+**Register the OAuth App under the ORGANISATION, not a personal account.**
+`den-frie-vilje` has OAuth App access restrictions on, so a personally-owned
+app produces a token that authenticates perfectly and cannot read the org's
+repositories. The failure is invisible until someone tries to SAVE, and what
+they see is "There was an error while saving the entry" — which reads as a bug
+in the editor rather than as a permission that was never granted. It is also
+easy to cause: the authorization screen carries a per-organisation Grant button
+that the green Authorize button does not require you to touch.
+
+An org-owned app is not subject to its own org's restrictions, so it cannot
+happen at all. Register at
+`https://github.com/organizations/<org>/settings/applications/new`.
+
+To repair a personally-owned one already in use, without changing any secret or
+touching the stack: approve it at
+`https://github.com/organizations/<org>/settings/oauth_application_policy`.
+The token already issued starts working.
+
 Probe, repository: `scripts/check-deploy.ts` exists and is wired into the
 `check` script. It parses the CMS config's own `base_url` rather than
 matching on the literal `/auth`, so a site that mounts it elsewhere is still
