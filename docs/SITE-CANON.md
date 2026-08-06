@@ -78,11 +78,24 @@ tag is used. A pin left behind a later release shows as WARN, which is the
 signal to open a bump. If that bump traffic ever becomes real work, a
 self-hosted Renovate delivering bump PRs is the documented next step.
 
+**Changing a pin changes what the signature says.** The Fulcio SAN on a
+keyless signature is `build-and-sign.yml` at the ref the *caller* selected,
+not the calling repository or its branch. So a pin is not only a supply-chain
+choice, it is the signing identity, and the NAS agent verifies against a regex
+of identities it will accept. On 2026-08-05 the first tag pins moved two sites
+to `refs/tags/v1`, the agent accepted `refs/heads/(main|staging)` only, and it
+failed closed on correctly signed images until the agent was widened (#36).
+The lockstep this repository already documents for the cosign *version* applies
+to the *identity* too.
+
 Probe, repository: every `uses:` of `build-and-sign.yml` references the newest
-tag on this repository. A tag that is not the newest is WARN; a branch
-reference is FAIL. The probe fails closed: an unreadable workflow list or no
-caller at all is FAIL, never PASS. Before any tag exists the probe reports
-WARN, since there is nothing to pin to.
+tag on this repository, and the identity that pin produces is accepted by
+`COSIGN_IDENTITY_REGEX`, read out of `nas-agent/deploy-agent.sh`. A pin the
+agent would reject is FAIL, because merging it stops that site deploying. A
+tag that is not the newest is WARN; a branch reference is FAIL. The probe
+fails closed throughout: an unreadable workflow list, no caller at all, or an
+unreadable agent regex are all FAIL, never PASS. Before any tag exists the
+probe reports WARN, since there is nothing to pin to.
 
 Fleet rollout is campaign 2 (issue #34).
 

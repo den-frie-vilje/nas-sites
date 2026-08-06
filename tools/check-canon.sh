@@ -17,9 +17,22 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 SITES_FILE="$HERE/canon-sites.txt"
 FAILS=0
 
-# Newest release tag on this repository, for the SC-5 pin-freshness probe.
-# sort -V so v10 beats v9; empty when no tag has been released yet.
-LATEST_TAG="$(gh api repos/den-frie-vilje/nas-sites/tags --jq '.[].name' 2>/dev/null | sort -V | tail -1 || true)"
+# Release tags on this repository. LATEST_TAG drives the SC-5 freshness
+# check (sort -V so v10 beats v9); ALL_TAGS tells a tag pin from a branch
+# pin when deriving what a pin signs as. Empty when nothing is released.
+ALL_TAGS="$(gh api repos/den-frie-vilje/nas-sites/tags --jq '.[].name' 2>/dev/null || true)"
+LATEST_TAG="$(printf '%s\n' "$ALL_TAGS" | sort -V | tail -1)"
+
+# What the NAS agent will accept, read from the agent itself. The Fulcio
+# SAN on a keyless signature is build-and-sign.yml at the ref the CALLER
+# selected, so changing a site's pin changes the identity its images sign
+# under. When that identity falls outside the agent's regex the agent
+# fails closed and the site stops deploying, which is what happened on
+# 2026-08-05 (issue #36). SC-5 compares the two rather than trusting they
+# stay in step.
+AGENT_SH="$HERE/../nas-agent/deploy-agent.sh"
+COSIGN_RE="$(grep -m1 '^COSIGN_IDENTITY_REGEX=' "$AGENT_SH" 2>/dev/null | cut -d"'" -f2 || true)"
+IDENTITY_BASE="https://github.com/den-frie-vilje/nas-sites/.github/workflows/build-and-sign.yml"
 
 # fetch_file <repo> <path> -> file body on stdout, empty if absent
 fetch_file() {
@@ -94,12 +107,32 @@ while read -r REPO STAGE_HOST _PROD_HOST; do
   if [ -z "$LATEST_TAG" ]; then
     verdict SC-5 WARN "no tag released on nas-sites yet, nothing to pin to"
   else
-    PIN_STATE="PASS"; PIN_DETAIL="all build-and-sign callers pin $LATEST_TAG"
+    PIN_STATE="PASS"; PIN_DETAIL="all callers pin $LATEST_TAG, and the agent accepts it"
     SEEN=0
     for WF in $WFS; do
       W="$(fetch_file "$REPO" ".github/workflows/$WF")"
       for REF in $(grep -oE 'build-and-sign\.yml@[A-Za-z0-9._-]+' <<<"$W" | cut -d@ -f2); do
         SEEN=$((SEEN + 1))
+
+        # Would the NAS agent accept what this pin signs? Exact-match the ref
+        # against the tag list (grep -x, so v1 does not match v10) to tell
+        # refs/tags from refs/heads, then test the identity it produces.
+        if printf '%s\n' "$ALL_TAGS" | grep -qxF "$REF"; then
+          IDENT_REF="refs/tags/$REF"
+        else
+          IDENT_REF="refs/heads/$REF"
+        fi
+        if [ -z "$COSIGN_RE" ]; then
+          PIN_STATE="FAIL"
+          PIN_DETAIL="cannot read COSIGN_IDENTITY_REGEX from the agent; pins unverifiable"
+          continue
+        elif ! grep -qE "$COSIGN_RE" <<<"$IDENTITY_BASE@$IDENT_REF"; then
+          PIN_STATE="FAIL"
+          PIN_DETAIL="$WF pins $REF, signing as $IDENT_REF: the NAS agent would reject this site's images"
+          continue
+        fi
+
+        # Freshness, checked only once the identity is known good.
         [ "$REF" = "$LATEST_TAG" ] && continue
         if grep -qE '^v[0-9]' <<<"$REF"; then
           [ "$PIN_STATE" != "FAIL" ] && {
