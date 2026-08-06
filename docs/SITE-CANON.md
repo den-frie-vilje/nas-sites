@@ -149,6 +149,32 @@ and a file in `deploy/`, and the failure is invisible from the dev server,
 where Sveltia's local-repository mode needs no proxy at all. The site could not
 be edited on the only host it was configured for.
 
+**Operating it, which the deploy manual did not cover.** The OAuth secrets are
+stack env, and an env-only change moves no image digest, so the agent's next
+fire does nothing with it — `deploy-agent.sh` only acts on a digest change or
+on nothing running. It needs a force-recreate, and both of its arguments are
+somewhere other than where they look:
+
+```sh
+sudo docker compose \
+  -p gosscounselling-co-uk-staging \
+  -f /volume1/docker/<domain>/repo/deploy/compose.staging.yml \
+  --env-file /volume1/docker/<domain>/staging/staging.env \
+  up -d --force-recreate sveltia-auth
+```
+
+- The **compose file is in the repo checkout** (`<domain>/repo/`), not beside
+  the env file in the stack directory (`<domain>/staging/`). Only the env file
+  lives there.
+- The **project name is `$DOMAIN-$ENV_NAME` with dots turned to dashes**
+  (`deploy-agent.sh:316`), passed as `-p`, which OVERRIDES the `name:` field
+  inside the compose file. Those two disagree on every site in the fleet, and
+  the one in the file is the one that is ignored. `docker compose ls` is the
+  answer that cannot be wrong.
+
+PULL-DEPLOY-MODEL.md §"Rotating Cloudflare / OAuth secrets" said of the
+force-recreate "Document this if it bites in practice." It bit.
+
 Probe, repository: `scripts/check-deploy.ts` exists and is wired into the
 `check` script. It parses the CMS config's own `base_url` rather than
 matching on the literal `/auth`, so a site that mounts it elsewhere is still
