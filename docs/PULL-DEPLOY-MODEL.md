@@ -533,8 +533,21 @@ ordered by how often they bite:
   `build-and-sign.yml`). Confirm the site's caller workflow points at
   `build-and-sign.yml` and re-trigger a build.
 - The signing identity regex doesn't match. The agent expects
-  `^https://github\.com/den-frie-vilje/[^/]+/\.github/workflows/build-and-sign\.yml@refs/heads/(main|staging)$`.
-  If you renamed the workflow or the org, update both ends.
+  `^https://github\.com/den-frie-vilje/nas-sites/\.github/workflows/build-and-sign\.yml@refs/(heads/main|tags/v[0-9]+)$`.
+  The identity is always this repository's workflow at the ref the site
+  called it by, so **changing how a site references `build-and-sign.yml`
+  changes the signature identity** and the agent must be updated in
+  lockstep. That is what broke chrishemmings and skovbyesexologi staging
+  on 2026-08-05: the SC-5 port moved both callers to `@v1`, the images
+  were signed as `…build-and-sign.yml@refs/tags/v1`, and an agent that
+  only accepted `refs/heads/…` refused them. Reproduce a mismatch with:
+  ```sh
+  cosign verify --certificate-identity-regexp '<the agent regex>' \
+    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+    ghcr.io/den-frie-vilje/<image>:<tag>
+  ```
+  The error prints the identity it actually got. Renaming the workflow or
+  the org has the same effect; update both ends.
 - The image package on GHCR is private. Anonymous pulls fail with HTTP
   401 → the agent reports "no signatures found." Make the package
   public per [§7](#7-make-first-party-ghcr-images-public). Diagnose
@@ -583,7 +596,7 @@ sudo /volume1/docker/nas-sites/deploy-agent.sh <domain> <env>
 
 | Capability | Requires |
 |---|---|
-| Deploy code to the NAS | An image cosign-signed by `build-and-sign.yml@refs/heads/(main\|staging)` of a `den-frie-vilje/*` repo, AND a commit on the watched branch of the site repo, AND the agent's next fire to land. |
+| Deploy code to the NAS | An image cosign-signed by `nas-sites`' own `build-and-sign.yml`, at `refs/heads/main` or a `refs/tags/vN` release, AND a commit on the watched branch of the site repo, AND the agent's next fire to land. The identity does not distinguish staging from production; the channel separation is the image tag the agent pulls plus branch protection on the site repo. |
 | Modify what the agent does (e.g. disable the cosign step) | Operator sudo to overwrite `/volume1/docker/nas-sites/deploy-agent.sh`. The agent itself never reads from a git clone at runtime. |
 | Trigger an out-of-band deploy | Shell access on the NAS as `deploy` or `root`. There is no remote trigger. |
 | Deploy a forged image (no valid signature) | Either a cosign signing key (none exists in keyless mode) or CI control on a permitted branch matching the identity regex. Branch protection + signed commits on the site repo close this further. |

@@ -86,14 +86,35 @@ LOCK_DIR="${LOCK_DIR:-/tmp/nas-sites-deploy}"
 COSIGN_IMAGE="${COSIGN_IMAGE:-ghcr.io/sigstore/cosign/cosign:v3.0.6}"
 YQ_IMAGE="${YQ_IMAGE:-mikefarah/yq:4}"
 
-# Cosign keyless verification parameters. Identity regex matches our CI
-# workflow on permitted branches only — staging deploys only what was
-# signed by build-and-sign.yml on refs/heads/staging, production only
-# what was signed on refs/heads/main. Forging a valid signature requires
-# both (a) the ability to run the workflow on a permitted branch (gated
-# by GitHub branch protection on the site repo) and (b) the OIDC chain
-# back to GitHub Actions.
-COSIGN_IDENTITY_REGEX='^https://github\.com/den-frie-vilje/[^/]+/\.github/workflows/build-and-sign\.yml@refs/heads/(main|staging)$'
+# Cosign keyless verification parameters.
+#
+# The SAN on a keyless Fulcio certificate is the job_workflow_ref of the
+# workflow that ran the signing step. Every site delegates signing to the
+# shared reusable workflow, so that value is always THIS repository's
+# build-and-sign.yml at the ref the caller selected — never the calling
+# site's repository, and never the caller's branch. Measured 2026-08-06
+# across four live images:
+#
+#   chrishemmings:production-latest  …/nas-sites/…/build-and-sign.yml@refs/heads/main
+#   m-path:staging-latest            …/nas-sites/…/build-and-sign.yml@refs/heads/main
+#   chrishemmings:staging-latest     …/nas-sites/…/build-and-sign.yml@refs/tags/v1
+#   skovbyesexologi:staging-latest   …/nas-sites/…/build-and-sign.yml@refs/tags/v1
+#
+# Hence the two alternatives below: refs/heads/main for sites that still
+# call the workflow floating, refs/tags/vN for sites that have adopted the
+# SC-5 tag pin. Drop the branch alternative once every site is pinned.
+#
+# What this regex does NOT do is separate staging from production. Both
+# channels are signed under the same identity, so the branch alternation
+# that used to read (main|staging) never distinguished them, and the
+# refs/heads/staging half never matched anything. That separation rests on
+# the image tag the agent pulls (staging-latest vs production-latest) and
+# on branch protection in the site repository, not on this regex.
+#
+# Forging a valid signature therefore requires the ability to run
+# build-and-sign.yml from this repository at a permitted ref, plus the OIDC
+# chain back to GitHub Actions.
+COSIGN_IDENTITY_REGEX='^https://github\.com/den-frie-vilje/nas-sites/\.github/workflows/build-and-sign\.yml@refs/(heads/main|tags/v[0-9]+)$'
 COSIGN_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 
 # Which images in a compose file we cosign-verify, by image-ref regex.

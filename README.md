@@ -166,7 +166,7 @@ The CD pipeline's privilege boundary is:
 
 | Capability | Requires |
 |---|---|
-| Deploy code on NAS | An image cosign-signed by `build-and-sign.yml@refs/heads/(main\|staging)` of a `den-frie-vilje/*` repo, AND a commit on the watched branch of the corresponding site repo, AND the deploy agent's next fire to land |
+| Deploy code on NAS | An image cosign-signed by this repository's `build-and-sign.yml`, at `refs/heads/main` or a `refs/tags/vN` release, AND a commit on the watched branch of the corresponding site repo, AND the deploy agent's next fire to land |
 | Modify what the NAS deploys (e.g. disable signature verification) | Operator action: pull `nas-sites/main`, re-install `deploy-agent.sh` on the NAS via sudo. A `nas-sites/main` push alone cannot do this. |
 | Trigger an out-of-band deploy | NAS operator with shell access (`sudo -u deploy /volume1/docker/nas-sites/deploy-agent.sh`). |
 
