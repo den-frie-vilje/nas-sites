@@ -16,6 +16,11 @@ STRICT=0
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SITES_FILE="$HERE/canon-sites.txt"
 FAILS=0
+# Sites actually measured. Reported in the summary because a checker that
+# only reports failures cannot tell a clean fleet from a short one: until
+# 2026-08-10 gosscounselling.co.uk was missing from the list and every run
+# said "No FAILs" over four sites without ever saying four.
+SITES=0
 
 # Release tags on this repository. LATEST_TAG drives the SC-5 freshness
 # check (sort -V so v10 beats v9); ALL_TAGS tells a tag pin from a branch
@@ -47,6 +52,7 @@ verdict() {
 
 while read -r REPO STAGE_HOST _PROD_HOST; do
   case "$REPO" in ''|\#*) continue ;; esac
+  SITES=$((SITES + 1))
   echo "== $REPO ($STAGE_HOST)"
 
   ROBOTS_ROUTE="$(fetch_file "$REPO" "src/routes/robots.txt/+server.ts")"
@@ -191,10 +197,17 @@ while read -r REPO STAGE_HOST _PROD_HOST; do
   echo
 done < "$SITES_FILE"
 
+if [ "$SITES" -eq 0 ]; then
+  # Fail closed. An empty or unreadable list is not a clean fleet, and
+  # reporting it as one is the whole failure this counter exists to prevent.
+  echo "No sites measured: $SITES_FILE is empty or unreadable."
+  exit 1
+fi
+
 if [ "$FAILS" -gt 0 ]; then
-  echo "$FAILS probe(s) FAILed."
+  echo "$SITES site(s) measured, $FAILS probe(s) FAILed."
   [ "$STRICT" -eq 1 ] && exit 1
 else
-  echo "No FAILs."
+  echo "$SITES site(s) measured, no FAILs."
 fi
 exit 0
