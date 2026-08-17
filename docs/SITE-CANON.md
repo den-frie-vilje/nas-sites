@@ -199,3 +199,63 @@ matching on the literal `/auth`, so a site that mounts it elsewhere is still
 measured. Reference: gosscounselling.co.uk.
 Probe, staging origin: `/auth/auth` does not 404. It will redirect to GitHub
 or complain about credentials; either is proof something is listening.
+
+## SC-9: fonts served from our own origin — adopted
+
+A site serves its own typefaces. No stylesheet, `@font-face` `src`, or
+`preconnect` in the repository or on the live origin names a third-party font
+host.
+
+The hosts that count as third-party for this clause: `fonts.googleapis.com`,
+`fonts.gstatic.com` (Google Fonts), `cdn.jsdelivr.net` and `unpkg.com` (npm
+CDNs, which is how Fontsource is served by default), `use.typekit.net`,
+`use.fontawesome.com`, and `fonts.bunny.net`. Bunny is on the list despite
+being the privacy-conscious option: the clause is about who receives the
+visitor's IP address, and the answer has to be us.
+
+Self-hosting means the font files ship with the site: the Fontsource npm
+packages pinned in `package.json`, copied into the build, and declared in our
+own `@font-face` rules.
+
+**Why this is a clause.** A font request tells the host who is reading the
+page, from where, and when. A German court held that serving Google Fonts from
+Google transfers the visitor's IP address without consent, which is the whole
+argument in `sveltia/sveltia-cms#443`, and Sveltia moved its own fonts off
+Google for exactly that reason in v0.174. Our sites carry the same exposure
+for every visitor rather than for two editors, on sites whose entire
+architecture, static build, git-backed CMS, self-hosted OAuth, pull-only
+deploys, was chosen so that nothing runs on somebody else's infrastructure.
+Fonts were the last runtime call to a third party, and they were there by
+default rather than by decision.
+
+**What this is not.** Not a ban on the typefaces. Every family currently
+loaded from Google is on Fontsource under the same open licence; this changes
+who serves the bytes, not which bytes.
+
+**Three things a port must measure rather than assume.** A search and replace
+produces a slower site that renders differently:
+
+1. **Subsetting.** Google's `css2` endpoint serves per-browser subsets split by
+   `unicode-range`. A naive self-host ships every glyph in the family. Danish
+   and Norwegian need Latin Extended; check what the site's copy actually uses.
+2. **Variable versus static.** Families served with an axis (`opsz`, `wght`) or
+   an italic have both shapes on Fontsource, and the wrong one changes the
+   rendering.
+3. **`display=swap`.** It is in the Google URL and has to be reproduced in our
+   own `@font-face`, or the site gains a flash of invisible text it did not
+   have.
+4. **The family name changes.** Fontsource suffixes variable families with
+   `Variable`, so `'DM Sans'` becomes `'DM Sans Variable'` and the site's CSS
+   tokens have to name both: `'DM Sans Variable', 'DM Sans', sans-serif`. A
+   port that swaps the imports and leaves the tokens alone renders in
+   `sans-serif` and **still passes this probe**, because the probe measures
+   which hosts are named, not which typeface arrives. Found on the first port.
+   The instrument is `document.fonts` after a build, not the scorecard.
+
+Reference implementation: pending; `denfrievilje.dk` settles the approach,
+being ours, so a typography regression costs us and not a client.
+
+Probe, repository: `src/app.html` names no third-party font host.
+Probe, live origin: the served home page names none either, which catches a
+site that moved the link into a component or a stylesheet rather than removing
+it.

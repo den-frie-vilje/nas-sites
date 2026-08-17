@@ -194,6 +194,25 @@ while read -r REPO STAGE_HOST _PROD_HOST; do
     verdict SC-8 "$SC8_STATE" "$SC8_DETAIL"
   fi
 
+  # SC-9 fonts served from our own origin. Measured in the repository and on
+  # the live origin, because moving the link out of src/app.html into a
+  # component or a stylesheet removes it from the first probe and changes
+  # nothing for the visitor. APP_HTML and HOME_HTML are already fetched above.
+  FONT_HOSTS='fonts\.googleapis\.com|fonts\.gstatic\.com|cdn\.jsdelivr\.net|unpkg\.com|use\.typekit\.net|use\.fontawesome\.com|fonts\.bunny\.net'
+  # `|| true` on both: a clean site makes grep exit 1, and this script runs
+  # under `set -o pipefail`, so the happy path would abort the whole run.
+  SC9_REPO="$(grep -oE "$FONT_HOSTS" <<<"$APP_HTML" | sort -u | paste -sd, - || true)"
+  SC9_LIVE="$(grep -oE "$FONT_HOSTS" <<<"$HOME_HTML" | sort -u | paste -sd, - || true)"
+  if [ -n "$SC9_REPO" ] && [ -n "$SC9_LIVE" ]; then
+    verdict SC-9 FAIL "third-party font host in src/app.html and served on the staging origin: $SC9_REPO"
+  elif [ -n "$SC9_REPO" ]; then
+    verdict SC-9 FAIL "third-party font host in src/app.html: $SC9_REPO"
+  elif [ -n "$SC9_LIVE" ]; then
+    verdict SC-9 FAIL "src/app.html is clean but the staging origin still serves: $SC9_LIVE"
+  else
+    verdict SC-9 PASS "no third-party font host in the repository or on the staging origin"
+  fi
+
   echo
 done < "$SITES_FILE"
 
