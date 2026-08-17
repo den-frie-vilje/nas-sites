@@ -1,8 +1,13 @@
 # Fleet list for tools/check-canon.sh: repo  staging-host  production-host
 # One site per line, whitespace-separated. Lines starting with # are ignored.
 # The org project registry remains the canonical prose record of what exists;
-# this file is the machine-readable subset the probes iterate.
+# this file is the machine-readable subset the probes iterate. A site joins
+# this list when it first deploys to a staging origin, not when it launches:
+# an unlisted site is measured by nothing, and the scorecard cannot tell a
+# clean fleet from a short one. Nothing reconciles the two lists
+# automatically, so adding the line is part of onboarding a site.
 den-frie-vilje/chrishemmings.co.uk   chrishemmings-co-uk.stage.denfrievilje.dk    chrishemmings-co-uk.prod.denfrievilje.dk
 den-frie-vilje/m-path.co.uk          m-path-co-uk.stage.denfrievilje.dk           m-path-co-uk.prod.denfrievilje.dk
 den-frie-vilje/skovbyesexologi.com   skovbyesexologi-com.stage.denfrievilje.dk    skovbyesexologi-com.prod.denfrievilje.dk
 den-frie-vilje/denfrievilje.dk       denfrievilje-dk.stage.denfrievilje.dk        denfrievilje-dk.prod.denfrievilje.dk
+den-frie-vilje/gosscounselling.co.uk gosscounselling-co-uk.stage.denfrievilje.dk  gosscounselling-co-uk.prod.denfrievilje.dk
