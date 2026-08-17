@@ -244,6 +244,13 @@ produces a slower site that renders differently:
 3. **`display=swap`.** It is in the Google URL and has to be reproduced in our
    own `@font-face`, or the site gains a flash of invisible text it did not
    have.
+4. **The family name changes.** Fontsource suffixes variable families with
+   `Variable`, so `'DM Sans'` becomes `'DM Sans Variable'` and the site's CSS
+   tokens have to name both: `'DM Sans Variable', 'DM Sans', sans-serif`. A
+   port that swaps the imports and leaves the tokens alone renders in
+   `sans-serif` and **still passes this probe**, because the probe measures
+   which hosts are named, not which typeface arrives. Found on the first port.
+   The instrument is `document.fonts` after a build, not the scorecard.
 
 Reference implementation: pending; `denfrievilje.dk` settles the approach,
 being ours, so a typography regression costs us and not a client.
