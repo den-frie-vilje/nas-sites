@@ -60,15 +60,26 @@ while read -r REPO STAGE_HOST _PROD_HOST; do
   HEADERS="$(curl -fsSI --max-time 20 "https://$STAGE_HOST/" 2>/dev/null || true)"
   HOME_HTML="$(curl -fsS --max-time 20 "https://$STAGE_HOST/" 2>/dev/null || true)"
 
-  # SC-1 fail-closed robots route
+  # SC-1 fail-closed robots route, serving a READABLE noindex.
+  # A blanket Disallow on staging is not the safe option it looks like: a
+  # crawler that cannot fetch the page never reads the noindex, and Google
+  # documents that such a URL can still be indexed from an inbound link.
+  # So the route stays fail-closed on the env compare, and the origin must
+  # leave the noindex reachable rather than block the crawl.
   if [ -z "$ROBOTS_ROUTE" ]; then
     verdict SC-1 FAIL "no src/routes/robots.txt/+server.ts on staging"
   elif ! grep -q "=== 'true'" <<<"$ROBOTS_ROUTE" || ! grep -q '\$env/static/public' <<<"$ROBOTS_ROUTE"; then
     verdict SC-1 FAIL "route exists but is not the fail-closed static-env compare"
-  elif ! grep -q '^Disallow: /$' <<<"$ROBOTS_BODY" || grep -q '^Sitemap:' <<<"$ROBOTS_BODY"; then
-    verdict SC-1 FAIL "staging origin robots is not Disallow-all without advert"
+  elif grep -q '^Sitemap:' <<<"$ROBOTS_BODY"; then
+    verdict SC-1 FAIL "staging origin advertises a sitemap"
+  elif grep -q '^Disallow: /$' <<<"$ROBOTS_BODY"; then
+    verdict SC-1 FAIL "staging origin blanket-Disallows, so the noindex header can never be read"
+  elif ! grep -qi '^x-robots-tag:.*noindex' <<<"$HEADERS"; then
+    verdict SC-1 FAIL "crawlable staging origin with no noindex header: this is the indexable combination"
+  elif ! grep -qi '^x-robots-tag:.*noarchive' <<<"$HEADERS" || ! grep -qi '^x-robots-tag:.*nosnippet' <<<"$HEADERS"; then
+    verdict SC-1 WARN "noindex served and readable, but without noarchive/nosnippet"
   else
-    verdict SC-1 PASS "fail-closed route; staging origin bakes Disallow-all, no advert"
+    verdict SC-1 PASS "fail-closed route; crawlable staging origin serving a readable noindex, no advert"
   fi
 
   # SC-2 per-mode env contract

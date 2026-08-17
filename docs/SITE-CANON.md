@@ -16,20 +16,55 @@ org's coordination documents; this file is the technical register.
 Status values: **adopted** (probes enforced fleet-wide) and **proposed**
 (reference implementation exists, fleet rollout pending).
 
-## SC-1: fail-closed robots route — adopted
+## SC-1: fail-closed robots route, serving a readable noindex — adopted
 
 robots.txt is a prerendered route, never a static file. Only the literal
 `PUBLIC_ALLOW_INDEXING === 'true'`, imported from `$env/static/public`, bakes
-the Allow variant with the sitemap advert; any other value, including an unset
-variable, bakes `Disallow: /` with no advert. The route deploys atomically
-with the image, so it is the primary strap; infra-side straps rot. The
-Disallow list is a shared constant that also feeds the derived-sitemap filter
-(reference shape: `src/lib/seo/robots.ts` on chrishemmings.co.uk).
+the production variant with the sitemap advert; any other value, including an
+unset variable, bakes the staging variant with no advert. The route deploys
+atomically with the image, so it is the primary strap; infra-side straps rot.
+
+**The staging variant allows crawling.** It carries `Allow: /`, disallows only
+paths that are genuinely sensitive (`/admin/`), advertises no sitemap, and
+relies on the `X-Robots-Tag: noindex` that SC-3 already requires on every
+staging response. Ideally `noindex, nofollow, noarchive, nosnippet`; a bare
+`noindex` is a WARN.
+
+**Why this clause changed, on 2026-08-17.** It used to require a blanket
+`Disallow: /` on staging, and that is the combination that cannot deindex
+anything. Google's own documentation is explicit:
+
+> "For the `noindex` rule to be effective, the page or resource must not be
+> blocked by a robots.txt file, and it has to be otherwise accessible to the
+> crawler. If the page is blocked by a robots.txt file or the crawler can't
+> access the page, the crawler will never see the `noindex` rule, and the page
+> can still appear in search results, for example if other pages link to it."
+
+So a Disallow-all staging site serves a `noindex` header no compliant crawler
+will ever read, and a single inbound link is enough to put the URL in an index
+without a snippet. Four of the five sites were in exactly that state and the
+scorecard called them PASS, because the clause measured the intention rather
+than the effect. `gosscounselling.co.uk` was the only site doing it correctly
+and was the only FAIL.
+
+**The tradeoff, accepted deliberately.** Allowing the crawl means compliant
+crawlers fetch staging content, so it can reach caches and corpora belonging to
+parties that honour robots.txt but not `noindex`. Blocking the crawl does not
+prevent that either, since anything ignoring `noindex` tends to ignore
+robots.txt too; it only prevents the well-behaved from reading the instruction
+we most want them to obey. `noarchive` and `nosnippet` narrow the residue. If a
+staging site ever holds material that must not be fetched at all, the answer is
+authentication, not a robots directive.
+
+Reference implementation: `gosscounselling.co.uk`.
 
 Probe, repository: `src/routes/robots.txt/+server.ts` exists, contains
 `=== 'true'` and imports `$env/static/public`.
-Probe, staging origin: `/robots.txt` body contains `Disallow: /` and no
-`Sitemap:` line.
+Probe, staging origin: `/robots.txt` advertises no `Sitemap:`, does not carry a
+blanket `Disallow: /`, and the origin serves an `X-Robots-Tag` containing
+`noindex`. WARN when that header lacks `noarchive` or `nosnippet`; FAIL when a
+crawlable origin serves no `noindex` at all, which is the genuinely indexable
+combination.
 
 ## SC-2: per-mode env contract — adopted
 
