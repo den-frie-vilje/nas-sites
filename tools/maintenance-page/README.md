@@ -1,21 +1,36 @@
 # maintenance-page
 
-One static page for any site on the NAS while its real stack is down. Every
-path on every name answers HTTP 503 with `Retry-After`, so browsers show the
-page and search engines keep the site indexed as temporarily unavailable. The
-page names the host it was asked for, in Danish or English after the browser's
-language (`?lang=da` and `?lang=en` override), in the bureau's own type and
-colours, and carries a contact address.
+One static page for any site on the NAS while its real stack is down, in the
+bureau's own type and colours. The page picks Danish or English after the
+browser's language (`?lang=da` and `?lang=en` override), shows the host name
+it was opened on, links the advisory, and carries a contact address. Fonts are
+self-hosted (OFL-1.1).
 
-Run it as the operator, like the agent:
+Two ways to put it in front of a site:
+
+**Web Station portal** (sites whose public name is a Web Station portal, so
+the certificate and the http to https redirect stay as they are). Copy the
+page into the web share once and create a static website for it:
+
+```sh
+sudo mkdir -p /volume1/web/maintenance-page
+sudo cp -r /volume1/docker/nas-sites/repo/tools/maintenance-page/index.html /volume1/docker/nas-sites/repo/tools/maintenance-page/style.css /volume1/docker/nas-sites/repo/tools/maintenance-page/fonts /volume1/web/maintenance-page/
+sudo chmod -R a+rX /volume1/web/maintenance-page
+```
+
+Then Web Station, Web Service, Create, static website, name `maintenance-page`,
+document root `web/maintenance-page`. Per site: Web Service Portal, edit the
+portal, service `maintenance-page`. Reverse the change when the site is back.
+A static website answers 200, not 503.
+
+**Reverse Proxy rule** (sites on rules, as the client sites are): the
+container answers every path with HTTP 503 and `Retry-After`, which keeps the
+site indexed as temporarily unavailable.
 
 ```sh
 sudo docker compose -p maintenance-page -f /volume1/docker/nas-sites/repo/tools/maintenance-page/compose.yml up -d
 ```
 
-It listens on `127.0.0.1:18099`. Then, per site to take down, point its DSM
-entry at it: a Reverse Proxy rule gets destination `localhost` port 18099; a
-Web Station portal gets the `maintenance-page (project)` service. Reverse the
-change when the site is back, and `down` the stack.
-
-`GET /ping` answers 200 for health checks.
+It listens on `127.0.0.1:18099`; set the rule's destination to `localhost`
+port 18099, and back when the site returns. `GET /ping` answers 200 for
+health checks.
