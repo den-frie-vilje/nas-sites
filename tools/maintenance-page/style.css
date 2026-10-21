@@ -1,8 +1,8 @@
 /* Den Frie Vilje tokens, as on denfrievilje.dk (src/app.css): Space Grotesk
    for the heading, DM Sans for text, near-neutral surface and ink, one neon
    accent used once. Fonts self-hosted, OFL-1.1, from @fontsource-variable. */
-@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 300 700; font-display: swap; src: url("fonts/space-grotesk-latin-wght-normal.woff2") format("woff2"); }
-@font-face { font-family: "DM Sans"; font-style: normal; font-weight: 100 1000; font-display: swap; src: url("fonts/dm-sans-latin-opsz-normal.woff2") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 300 700; font-display: swap; src: url("/fonts/space-grotesk-latin-wght-normal.woff2") format("woff2"); }
+@font-face { font-family: "DM Sans"; font-style: normal; font-weight: 100 1000; font-display: swap; src: url("/fonts/dm-sans-latin-opsz-normal.woff2") format("woff2"); }
 
 :root {
   color-scheme: light dark;

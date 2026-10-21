@@ -21,7 +21,11 @@ sudo chmod -R a+rX /volume1/web/maintenance-page
 Then Web Station, Web Service, Create, static website, name `maintenance-page`,
 document root `web/maintenance-page`. Per site: Web Service Portal, edit the
 portal, service `maintenance-page`. Reverse the change when the site is back.
-A static website answers 200, not 503.
+A static website answers 200 on `/` and 404 on every other path, so copy the
+page as the site's 404 page too (`cp index.html 404.html` in the folder) and
+give the portal an error page profile that points at that folder, under Web
+Station, Error Page; deep links from bookmarks and notification mails then
+show the page as well. Asset paths are absolute for that reason.
 
 **Reverse Proxy rule** (sites on rules, as the client sites are): the
 container answers every path with HTTP 503 and `Retry-After`, which keeps the
