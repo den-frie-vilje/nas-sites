@@ -57,10 +57,10 @@ jobs:
           mkdir -p out
           docker run --rm -v "$PWD/aports:/work" -v "$PWD/out:/out" "alpine:${{ inputs.alpine }}" sh -euxc '
             apk add --no-cache alpine-sdk
-            abuild-keygen -a -i -n
+            abuild-keygen -a -n && cp /root/.abuild/*.rsa.pub /etc/apk/keys/
             cd /work/community/php85
             REPODEST=/out abuild -F -r deps fetch unpack prepare build rootpkg
-            cp /etc/apk/keys/*.rsa.pub /out/community/x86_64/
+            cp /root/.abuild/*.rsa.pub /out/community/x86_64/
             ls -l /out/community/x86_64/
           '
 
