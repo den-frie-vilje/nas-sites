@@ -389,23 +389,52 @@ deploy_site() {
         return 1
     fi
 
-    local target_id="" target_ref running_container running_id=""
-    # Resolve the site service's image: ref (env-vars substituted).
-    target_ref=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" config 2>/dev/null \
-        | docker run --rm -i "$YQ_IMAGE" ".services.\"$SITE_SERVICE\".image" 2>/dev/null \
-        | grep -v '^null$' | head -1)
-    if [ -n "$target_ref" ]; then
-        target_id=$(docker image inspect --format '{{.Id}}' "$target_ref" 2>/dev/null || echo "")
-    fi
-    running_container=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" ps --quiet "$SITE_SERVICE" 2>/dev/null | head -1)
-    if [ -n "$running_container" ]; then
-        running_id=$(docker inspect --format '{{.Image}}' "$running_container" 2>/dev/null || echo "")
-    fi
+    # Every in-scope service (its image matches $COSIGN_REQUIRE_REGEX):
+    # the image id its ref resolves to after the pull, against the id of
+    # the container it runs. A stack can carry several of our images (the
+    # HumHub stacks have humhub and nginx); comparing only one service
+    # missed a change to any other, and an nginx-only rebuild never
+    # deployed (2026-10-21, #58). $SITE_SERVICE is no longer consulted.
+    #
+    # Why `docker compose config` + yq and NOT `docker compose images -q
+    # <service>`: the latter returns the image of the CURRENTLY RUNNING
+    # container, not the image the compose file would deploy, so change
+    # detection always reported "no change" (found the hard way
+    # 2026-04-27). The `compose config` path resolves env-var
+    # substitutions, so it works for image: lines that reference ${VAR}.
+    local svc img target_id running_container running_id
+    local -a changed=()
+    local in_scope=0
+    while read -r svc img; do
+        [ -n "$svc" ] || continue
+        [[ "$img" =~ $COSIGN_REQUIRE_REGEX ]] || continue
+        in_scope=$((in_scope + 1))
+        target_id=$(docker image inspect --format '{{.Id}}' "$img" 2>/dev/null || echo "")
+        running_container=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" ps --quiet "$svc" 2>/dev/null | head -1)
+        running_id=""
+        if [ -n "$running_container" ]; then
+            running_id=$(docker inspect --format '{{.Image}}' "$running_container" 2>/dev/null || echo "")
+        fi
+        if [ -z "$running_container" ]; then
+            log "[$project] $svc: no running container"
+            changed+=("$svc")
+        elif [ -z "$target_id" ] || [ "$running_id" != "$target_id" ]; then
+            log "[$project] $svc: running ${running_id:7:19}… → target ${target_id:7:19}…"
+            changed+=("$svc")
+        fi
+    done < <("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" config 2>/dev/null \
+        | docker run --rm -i "$YQ_IMAGE" \
+            '.services | to_entries[] | select(.value.image != null) | .key + " " + .value.image' 2>/dev/null)
 
-    if [ -n "$running_id" ] && [ -n "$target_id" ] && [ "$running_id" = "$target_id" ]; then
-        log "[$project] no change — site already on ${target_id:7:19}…"
+    if [ "$in_scope" -eq 0 ]; then
+        err "[$project] no in-scope images in this compose file — at least one image matching $COSIGN_REQUIRE_REGEX is required"
+        return 1
+    fi
+    if [ "${#changed[@]}" -eq 0 ]; then
+        log "[$project] no change — every in-scope service already on its target image"
         return 0
     fi
+    log "[$project] deploying — ${changed[*]}"
 
     # ─── Deploying — verify signatures of in-scope images first ───────────
     # Cosign-verify only images matching $COSIGN_REQUIRE_REGEX (defaults to
@@ -413,12 +442,6 @@ deploy_site() {
     # etc.) skip the cosign gate — they're not signed by their authors and
     # are trusted via the @sha256:<digest> pin in the compose file
     # instead.
-    if [ -z "$running_container" ]; then
-        log "[$project] deploying — no running site container"
-    else
-        log "[$project] deploying — running ${running_id:7:19}… → target ${target_id:7:19}…"
-    fi
-
     local images verify_failed=0 verified_count=0 skipped_count=0
     if ! images=$(compose_images "$compose_file"); then
         err "[$project] failed to parse compose file"
@@ -460,10 +483,11 @@ deploy_site() {
     # Two passes:
     #   1. up -d  → applies any compose/env/network/volume changes across
     #               the whole stack idempotently.
-    #   2. up -d --force-recreate --no-deps <site>  → replaces the site
-    #               container even when its image: ref didn't change but
-    #               the digest behind a rolling tag did. --no-deps avoids
-    #               churning Caddy + sveltia-auth (no brief routing gap).
+    #   2. up -d --force-recreate --no-deps <changed…>  → replaces the
+    #               containers of the in-scope services whose image
+    #               changed, even when the image: ref didn't but the
+    #               digest behind a rolling tag did. --no-deps avoids
+    #               churning the rest of the stack (no brief routing gap).
     if ! "${DOCKER_COMPOSE[@]}" "${compose_args[@]}" up -d --wait 2>&1 \
         | sed "s/^/[$project]   up: /"; then
         err "[$project] docker compose up failed (first pass)"
@@ -471,7 +495,7 @@ deploy_site() {
     fi
 
     if ! "${DOCKER_COMPOSE[@]}" "${compose_args[@]}" up -d --wait \
-            --force-recreate --no-deps "$SITE_SERVICE" 2>&1 \
+            --force-recreate --no-deps "${changed[@]}" 2>&1 \
         | sed "s/^/[$project]   recreate: /"; then
         err "[$project] docker compose force-recreate failed (second pass)"
         return 1
