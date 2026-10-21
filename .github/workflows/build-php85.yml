@@ -1,0 +1,86 @@
+# Builds Alpine's own php85 package from the aports recipe on a stable branch
+# and publishes the resulting .apk files as a release, for the nights when
+# Alpine has committed a security fix but not yet published the package
+# (PHP 8.5.12 on 2026-10-21: recipe on 3.24-stable at 17:06, builders and
+# publishing stalled). An image installs the packages in place of Alpine's
+# until "apk upgrade" brings the same version from Alpine, then the line comes
+# out again. Same source, same build script, same Alpine 3.24 toolchain; the
+# package signing key is generated for the run and shipped beside the packages,
+# so the integrity that matters is the tarball's sha256, pinned in the
+# Dockerfile that installs it, and this run as the provenance.
+#
+# The test suite is skipped (it takes longer than the build and Alpine's own
+# builders run it on the same recipe); the build itself is not changed.
+
+name: Build php85 from aports
+
+on:
+  workflow_dispatch:
+    inputs:
+      aports-ref:
+        description: aports branch or commit holding the recipe
+        default: 3.24-stable
+        required: true
+      alpine:
+        description: Alpine release to build on
+        default: "3.24"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: alpinelinux/aports
+          ref: ${{ inputs.aports-ref }}
+          sparse-checkout: community/php85
+          path: aports
+
+      - name: Read the recipe's version
+        id: recipe
+        run: |
+          set -eu
+          cd aports/community/php85
+          ver=$(sed -n 's/^pkgver=//p' APKBUILD); rel=$(sed -n 's/^pkgrel=//p' APKBUILD)
+          echo "version=$ver-r$rel" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "php85 $ver-r$rel from aports $(git rev-parse --short HEAD)"
+
+      - name: Build in Alpine ${{ inputs.alpine }}
+        run: |
+          set -eu
+          mkdir -p out
+          docker run --rm -v "$PWD/aports:/work" -v "$PWD/out:/out" "alpine:${{ inputs.alpine }}" sh -euxc '
+            apk add --no-cache alpine-sdk
+            abuild-keygen -a -i -n
+            cd /work/community/php85
+            REPODEST=/out abuild -F -r deps fetch unpack prepare build rootpkg
+            cp /etc/apk/keys/*.rsa.pub /out/community/x86_64/
+            ls -l /out/community/x86_64/
+          '
+
+      - name: Package and checksum
+        id: pack
+        run: |
+          set -eu
+          V=${{ steps.recipe.outputs.version }}
+          tar -C out/community/x86_64 -czf "php85-$V-x86_64.tar.gz" .
+          sha256sum "php85-$V-x86_64.tar.gz" | tee "php85-$V-x86_64.tar.gz.sha256"
+          echo "sha256=$(cut -d' ' -f1 "php85-$V-x86_64.tar.gz.sha256")" >> "$GITHUB_OUTPUT"
+          tar -tzf "php85-$V-x86_64.tar.gz" | sort
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          V=${{ steps.recipe.outputs.version }}
+          gh release create "php85-$V" "php85-$V-x86_64.tar.gz" "php85-$V-x86_64.tar.gz.sha256" \
+            --repo "${{ github.repository }}" \
+            --title "php85 $V from aports, built for Alpine ${{ inputs.alpine }} x86_64" \
+            --notes "Built by run ${{ github.run_id }} from alpinelinux/aports@${{ steps.recipe.outputs.commit }} (community/php85, ${{ inputs.aports-ref }}) on alpine:${{ inputs.alpine }} with abuild, tests skipped. sha256 of the tarball: ${{ steps.pack.outputs.sha256 }}. Install the .apk files for the php85 packages already present in an image after adding the shipped .rsa.pub to /etc/apk/keys; drop it again when Alpine's index carries this version."
