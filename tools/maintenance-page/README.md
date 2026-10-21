@@ -3,7 +3,9 @@
 One static page for any site on the NAS while its real stack is down. Every
 path on every name answers HTTP 503 with `Retry-After`, so browsers show the
 page and search engines keep the site indexed as temporarily unavailable. The
-page names the host it was asked for, in Danish, and carries a contact address.
+page names the host it was asked for, in Danish or English after the browser's
+language (`?lang=da` and `?lang=en` override), in the bureau's own type and
+colours, and carries a contact address.
 
 Run it as the operator, like the agent:
 
