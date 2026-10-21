@@ -1,0 +1,25 @@
+# A maintenance page for any site on the NAS: one static page, HTTP 503 with
+# Retry-After on every path and every name, so browsers and search engines
+# treat it as temporary. Point a DSM portal or reverse-proxy rule at it while
+# the real stack is down. Operator-run, like the agent:
+#
+#   sudo docker compose -p maintenance-page -f /volume1/docker/nas-sites/repo/tools/maintenance-page/compose.yml up -d
+#
+# and `down` when the sites are back.
+
+name: maintenance-page
+
+services:
+  page:
+    image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18099:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./index.html:/usr/share/nginx/html/index.html:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
