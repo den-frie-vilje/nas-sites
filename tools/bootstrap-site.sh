@@ -39,16 +39,16 @@ require_deploy_can_write /volume1/docker
 heading "Bootstrap a (site, env) for the pull-only agent"
 
 DOMAIN=$(ask "Domain (e.g. example.com)")
-ENV_NAME=$(ask "Environment (staging|production)" "staging")
+ENV_NAME=$(ask "Environment (staging|production|blue|green)" "staging")
 REPO_DEFAULT="den-frie-vilje/$DOMAIN"
 REPO=$(ask "GitHub repo (owner/name)" "$REPO_DEFAULT")
-BRANCH_DEFAULT="$ENV_NAME"; [ "$ENV_NAME" = "production" ] && BRANCH_DEFAULT="main"
+BRANCH_DEFAULT="main"; [ "$ENV_NAME" = "staging" ] && BRANCH_DEFAULT="staging"
 BRANCH=$(ask "Branch to track" "$BRANCH_DEFAULT")
 COMPOSE_FILE_REL=$(ask "Compose file path inside repo" "deploy/compose.$ENV_NAME.yml")
 
 case "$ENV_NAME" in
-    staging|production) ;;
-    *) echo "ERROR: ENV_NAME must be 'staging' or 'production'" >&2; exit 1 ;;
+    staging|production|blue|green) ;;
+    *) echo "ERROR: ENV_NAME must be staging, production, blue or green" >&2; exit 1 ;;
 esac
 
 STACK_DIR="/volume1/docker/$DOMAIN/$ENV_NAME"
