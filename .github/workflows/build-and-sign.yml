@@ -161,10 +161,32 @@ jobs:
         # digest directly is unambiguous about what was signed: the
         # exact bytes produced by this build, regardless of how many
         # tags later point at them.
+        #
+        # A rebuild can reproduce a digest that an earlier run already
+        # signed (a commit that touches only the other Dockerfile of a
+        # two-image site). The transparency log then refuses the second,
+        # identical entry with a 409 and the run went red although the
+        # image is signed (issue #55). So: verify first against this
+        # workflow's own identity, sign only when that fails, and accept
+        # a signing failure if the digest verifies afterwards.
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
+          IDENTITY: '^https://github\.com/den-frie-vilje/nas-sites/\.github/workflows/build-and-sign\.yml@refs/(heads/main|tags/v[0-9]+)$'
+          ISSUER: https://token.actions.githubusercontent.com
         run: |
-          cosign sign --yes "${{ inputs.image-name }}@${DIGEST}"
+          set -eu
+          REF="${{ inputs.image-name }}@${DIGEST}"
+          verified() { cosign verify --certificate-identity-regexp "$IDENTITY" --certificate-oidc-issuer "$ISSUER" "$REF" > /dev/null 2>&1; }
+          if verified; then
+            echo "already signed by this workflow: a rebuild reproduced ${DIGEST}; nothing to sign"
+          elif cosign sign --yes "$REF"; then
+            echo "signed ${DIGEST}"
+          elif verified; then
+            echo "signing was refused but ${DIGEST} verifies; treating as signed"
+          else
+            echo "signing failed and ${DIGEST} does not verify" >&2
+            exit 1
+          fi
 
       - name: Verify pull-only deploy reached the NAS
         # Optional. Skipped if `verify-url` not set.
