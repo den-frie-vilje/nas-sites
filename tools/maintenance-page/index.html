@@ -11,11 +11,11 @@
 <main>
   <section class="lang" lang="da" data-lang="da">
     <h1>Lukket for en sikkerheds skyld</h1>
-    <p><span class="site">Siden</span> er offline. En kritisk sårbarhed i PHP blev offentliggjort den 21. oktober 2026, og siden er bygget på PHP.</p>
-    <p>Siden åbner igen, når sikkerhedsopdateringen er installeret og afprøvet. Opdateringen var ventet den 21. oktober 2026.</p>
+    <p><span class="site">Siden</span> er offline. En kritisk sårbarhed i PHP blev offentliggjort <time class="rel" datetime="2026-10-21">den 21. oktober 2026</time>, og siden er bygget på PHP.</p>
+    <p>Siden åbner igen, når sikkerhedsopdateringen er installeret og afprøvet. Opdateringen var ventet <time class="rel" datetime="2026-10-21">den 21. oktober 2026</time>.</p>
     <aside class="card">
       <p class="card-title">Hvad er der sket?</p>
-      <p>PHP er en udbredt softwarekomponent, som mange hjemmesider er bygget på. To alvorlige sårbarheder i PHP blev offentliggjort den 21. oktober 2026. Indtil de er lukket, er siden offline som en forholdsregel.</p>
+      <p>PHP er en udbredt softwarekomponent, som mange hjemmesider er bygget på. To alvorlige sårbarheder i PHP blev offentliggjort <time class="rel" datetime="2026-10-21">den 21. oktober 2026</time>. Indtil de er lukket, er siden offline som en forholdsregel.</p>
       <p class="card-more"><a href="https://cert.europa.eu/publications/security-advisories/2026-018">Læs sikkerhedsvarslet fra CERT-EU</a></p>
     </aside>
     <p>Alt indhold er bevaret. Du behøver ikke gøre noget.</p>
@@ -24,11 +24,11 @@
   </section>
   <section class="lang" lang="en" data-lang="en" hidden>
     <h1>Closed as a precaution</h1>
-    <p><span class="site">This site</span> is offline. A critical vulnerability in PHP was disclosed on 21 October 2026, and the site is built on PHP.</p>
-    <p>The site opens again when the security update is installed and tested. The update was expected on 21 October 2026.</p>
+    <p><span class="site">This site</span> is offline. A critical vulnerability in PHP was disclosed <time class="rel" datetime="2026-10-21">on 21 October 2026</time>, and the site is built on PHP.</p>
+    <p>The site opens again when the security update is installed and tested. The update was expected <time class="rel" datetime="2026-10-21">on 21 October 2026</time>.</p>
     <aside class="card">
       <p class="card-title">What happened?</p>
-      <p>PHP is a widely used software component that many websites are built on. Two serious vulnerabilities in PHP were disclosed on 21 October 2026. Until they are closed, the site is offline as a precaution.</p>
+      <p>PHP is a widely used software component that many websites are built on. Two serious vulnerabilities in PHP were disclosed <time class="rel" datetime="2026-10-21">on 21 October 2026</time>. Until they are closed, the site is offline as a precaution.</p>
       <p class="card-more"><a href="https://cert.europa.eu/publications/security-advisories/2026-018">Read the CERT-EU security advisory</a></p>
     </aside>
     <p>Everything on the site is kept. There is nothing you need to do.</p>
@@ -47,6 +47,17 @@
     document.title = lang === "da" ? "Lukket for en sikkerheds skyld" : "Closed as a precaution";
     if (location.hostname && location.hostname !== "localhost") {
       document.querySelectorAll(".site").forEach(function (e) { e.textContent = location.hostname; });
+    }
+    // Dates are the durable record; the display says "today", "yesterday" or
+    // "3 days ago" while that is true, and falls back to the date after a week.
+    if (window.Intl && Intl.RelativeTimeFormat) {
+      var rtf = new Intl.RelativeTimeFormat(lang, { numeric: "auto" });
+      var now = new Date(); now.setHours(12, 0, 0, 0);
+      document.querySelectorAll("time.rel").forEach(function (el) {
+        var d = new Date(el.getAttribute("datetime") + "T12:00:00");
+        var days = Math.round((d - now) / 86400000);
+        if (days <= 0 && days >= -6) { el.textContent = rtf.format(days, "day"); }
+      });
     }
   })();
 </script>
