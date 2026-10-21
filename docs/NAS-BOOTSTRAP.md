@@ -33,12 +33,32 @@ That's it for prerequisites.
    [PULL-DEPLOY-MODEL.md §One-time bootstrap](PULL-DEPLOY-MODEL.md#one-time-bootstrap).
    Five interactive scripts walk through deploy user, docker group, agent
    install, boot-up task, and DSM Task Scheduler entry.
-5. **DSM Web Station vhost per (site, env)** — hostname
-   `<DOMAIN_DASHED>.<env>.denfrievilje.dk`, proxy_pass to the
-   Caddy-container loopback port, bind the `*.stage.*` or `*.prod.*`
-   wildcard cert. Staging vhost adds `X-Robots-Tag: noindex, nofollow`.
-   This step is GUI-only — Web Station's APIs are too unstable across
-   DSM versions to script (see [DSM-AUTOMATION.md](DSM-AUTOMATION.md)).
+5. **DSM reverse proxy rules per name** (Control Panel › Login Portal ›
+   Advanced › Reverse Proxy), not Web Station portals. For every hostname
+   a stack answers to, origin name `<DOMAIN_DASHED>.<env>.denfrievilje.dk`
+   and the public names alike, two rules to the same loopback port:
+   - source HTTPS, port 443, HSTS on → destination HTTP `localhost:<CADDY_PORT>`,
+     then assign the certificate under Control Panel › Security › Certificate
+     › Settings (a new rule otherwise serves DSM's own `woody.local` cert);
+   - source HTTP, port 80 → the same destination. DSM marks the scheme in
+     `X-Forwarded-Proto`, and the stack answers plain HTTP with a 301 to
+     https (the Caddy lines below). A name without an HTTP rule is answered
+     by DSM's default server with its 625-byte stub, status 200, before the
+     stack sees anything.
+   Staging rules get `X-Robots-Tag: noindex, nofollow` as a custom header.
+   This step is GUI-only — DSM's APIs are too unstable across versions to
+   script (see [DSM-AUTOMATION.md](DSM-AUTOMATION.md)).
+
+   The redirect in the site's Caddyfile, inside the `:80` block, after any
+   host canonicalization so a non-canonical http name reaches the https
+   canonical in one hop:
+   ```
+   @plain header X-Forwarded-Proto http
+   redir @plain https://{host}{uri} 301
+   ```
+   A front that already redirects (Cloudflare's "always use HTTPS", a
+   previous host) hides a missing one; the stack carries it anyway for the
+   day the name moves.
 
 ## Per-site onboarding
 
@@ -52,10 +72,18 @@ clones the site repo, drops the per-stack env file, copies the agent
 config from `nas-agent/sites.env.example`, opens `$EDITOR` on each, and
 offers to run a one-off agent fire as a smoke test.
 
-Run twice per site (once for staging, once for production). The DSM Web
-Station vhost still has to be added by hand per step 5 above.
+Run twice per site (once for staging, once for production). The DSM reverse
+proxy rules still have to be added by hand per step 5 above.
 
 ## Gotchas
+
+### A bind-mounted single file keeps its old content after the agent's fetch
+
+The agent updates the clone with `git fetch` + `reset --hard`, which replaces
+changed files with new inodes. A container that bind-mounts one file from the
+clone (a Caddyfile, an env file) keeps the old inode until it is recreated:
+`docker compose … up -d --force-recreate --no-deps <service>`. Directory
+mounts do not have this problem.
 
 ### Custom systemd units do not survive DSM updates
 
