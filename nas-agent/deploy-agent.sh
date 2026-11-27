@@ -405,7 +405,7 @@ deploy_site() {
     # 2026-04-27). The `compose config` path resolves env-var
     # substitutions, so it works for image: lines that reference ${VAR}.
     local svc img target_id running_container running_id
-    local -a changed=()
+    local -a changed=() changed_images=()
     local in_scope=0
     while read -r svc img; do
         [ -n "$svc" ] || continue
@@ -419,10 +419,10 @@ deploy_site() {
         fi
         if [ -z "$running_container" ]; then
             log "[$project] $svc: no running container"
-            changed+=("$svc")
+            changed+=("$svc"); changed_images+=("$img")
         elif [ -z "$target_id" ] || [ "$running_id" != "$target_id" ]; then
             log "[$project] $svc: running ${running_id:7:19}… → target ${target_id:7:19}…"
-            changed+=("$svc")
+            changed+=("$svc"); changed_images+=("$img")
         fi
     done < <("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" config 2>/dev/null \
         | docker run --rm -i "$YQ_IMAGE" \
@@ -506,26 +506,41 @@ deploy_site() {
     # ─── Deploy ───────────────────────────────────────────────────────────
     # Two passes:
     #   1. up -d  → applies any compose/env/network/volume changes across
-    #               the whole stack idempotently.
-    #   2. up -d --force-recreate --no-deps <changed…>  → replaces the
-    #               containers of the in-scope services whose image
-    #               changed, even when the image: ref didn't but the
-    #               digest behind a rolling tag did. --no-deps avoids
-    #               churning the rest of the stack (no brief routing gap).
-    #               Skipped when only the compose definition changed:
-    #               the first pass has recreated those services.
+    #               the whole stack, and replaces the container of a
+    #               service whose image changed, also when the image: ref
+    #               didn't but the digest behind a rolling tag did.
+    #   2. Only for an in-scope service still on its old image after the
+    #      first pass: remove its container and bring the stack up again.
+    #      Not `up --force-recreate --no-deps`: Compose (2.20, 2.21)
+    #      stamps a container created that way with the hash of the
+    #      service without its depends_on, the next fire then saw a
+    #      changed definition and recreated it once more, and it
+    #      restarted services the first pass had just replaced
+    #      (2026-11-27).
     if ! "${DOCKER_COMPOSE[@]}" "${compose_args[@]}" up -d --wait 2>&1 \
         | sed "s/^/[$project]   up: /"; then
         err "[$project] docker compose up failed (first pass)"
         return 1
     fi
 
-    if [ "${#changed[@]}" -gt 0 ] \
-        && ! "${DOCKER_COMPOSE[@]}" "${compose_args[@]}" up -d --wait \
-            --force-recreate --no-deps "${changed[@]}" 2>&1 \
-        | sed "s/^/[$project]   recreate: /"; then
-        err "[$project] docker compose force-recreate failed (second pass)"
-        return 1
+    local i
+    local -a stale=()
+    for i in "${!changed[@]}"; do
+        target_id=$(docker image inspect --format '{{.Id}}' "${changed_images[$i]}" 2>/dev/null || echo "")
+        running_container=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" ps --quiet "${changed[$i]}" 2>/dev/null | head -1)
+        running_id=""
+        [ -z "$running_container" ] || running_id=$(docker inspect --format '{{.Image}}' "$running_container" 2>/dev/null || echo "")
+        [ -n "$target_id" ] && [ "$running_id" = "$target_id" ] || stale+=("${changed[$i]}")
+    done
+    if [ "${#stale[@]}" -gt 0 ]; then
+        log "[$project]   still on the old image after the first pass: ${stale[*]}"
+        if ! "${DOCKER_COMPOSE[@]}" "${compose_args[@]}" rm --stop --force "${stale[@]}" 2>&1 \
+                | sed "s/^/[$project]   remove: /" \
+            || ! "${DOCKER_COMPOSE[@]}" "${compose_args[@]}" up -d --wait 2>&1 \
+                | sed "s/^/[$project]   up: /"; then
+            err "[$project] replacing ${stale[*]} failed (second pass)"
+            return 1
+        fi
     fi
 
     # ─── Post-deploy ──────────────────────────────────────────────────────
