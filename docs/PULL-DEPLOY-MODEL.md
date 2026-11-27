@@ -298,12 +298,10 @@ from `<env>.env`):
 
 ```sh
 sudo $EDITOR /volume1/docker/<domain>/<env>/<env>.env
-# Force a redeploy on the next fire — the agent only redeploys on image
-# digest change. To pick up env-file changes, do one of:
+# The agent picks the change up on its next fire: a value the compose file
+# interpolates changes that service's definition, and the agent recreates
+# the service. To apply it at once:
 sudo /volume1/docker/nas-sites/deploy-agent.sh <domain> <env>   # manual fire
-# (which still won't redeploy if the digest hasn't moved — you may need
-# `docker compose -p <project> -f <compose> up -d --force-recreate`
-# manually for an env-only change. Document this if it bites in practice.)
 ```
 
 ### Disabling the agent (maintenance windows)
@@ -397,7 +395,9 @@ clear error pointing at the likely causes. Common reasons:
   `sudo tail -f /var/log/messages | grep nas-sites-deploy`.
 - **Agent ran but didn't redeploy** — confirm the image tag actually
   changed (check `docker compose -p <project> images`). The agent
-  intentionally no-ops on unchanged digests.
+  intentionally no-ops when the digests and the compose file's service
+  definitions are unchanged. A change to the content of a bind-mounted
+  file alone is not seen; restart that service by hand.
 - **Site doesn't expose `verify-pattern`** — grep the live response by
   hand to confirm.
 

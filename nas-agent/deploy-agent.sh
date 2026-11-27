@@ -28,8 +28,10 @@
 #     - read the compose file
 #     - cosign-verify every image: ref against our GitHub Actions OIDC
 #       signing identity (fails closed — no signature ⇒ no deploy)
-#     - if any image digest differs from what's running OR no container is
-#       running yet ⇒ docker compose pull && up -d --wait
+#     - if any image digest differs from what's running, no container is
+#       running yet, OR a service's definition in the compose file differs
+#       from the one its container was created from
+#       ⇒ docker compose pull && up -d --wait
 #     - else ⇒ skip (no-op deploy on subsequent fires)
 #     - optional Cloudflare cache purge on actual deploy
 #
@@ -430,11 +432,33 @@ deploy_site() {
         err "[$project] no in-scope images in this compose file — at least one image matching $COSIGN_REQUIRE_REGEX is required"
         return 1
     fi
-    if [ "${#changed[@]}" -eq 0 ]; then
-        log "[$project] no change — every in-scope service already on its target image"
+    # Every service, upstream images included: the hash Compose computes
+    # of the service's definition (image ref, environment, mounts, …, with
+    # the env file's values resolved) against the hash Compose stamped on
+    # the container it created. Without this a change to the compose file
+    # alone, or to the digest pin of an upstream image, waited for the
+    # next build of one of our own images (a Redis bump that never
+    # deployed, 2026-11-27). The content of a bind-mounted file is not
+    # part of the hash. A Compose without `config --hash` prints nothing
+    # here, and the agent then acts on image changes only, as before.
+    local hash container_hash
+    local -a drifted=()
+    while read -r svc hash; do
+        [ -n "$svc" ] && [ -n "$hash" ] || continue
+        running_container=$("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" ps --all --quiet "$svc" 2>/dev/null | head -1)
+        container_hash=""
+        if [ -n "$running_container" ]; then
+            container_hash=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$running_container" 2>/dev/null || echo "")
+        fi
+        [ "$container_hash" = "$hash" ] || drifted+=("$svc")
+    done < <("${DOCKER_COMPOSE[@]}" "${compose_args[@]}" config --hash '*' 2>/dev/null)
+
+    if [ "${#changed[@]}" -eq 0 ] && [ "${#drifted[@]}" -eq 0 ]; then
+        log "[$project] no change — every in-scope service already on its target image, every service as the compose file defines it"
         return 0
     fi
-    log "[$project] deploying — ${changed[*]}"
+    [ "${#changed[@]}" -eq 0 ] || log "[$project] deploying — ${changed[*]}"
+    [ "${#drifted[@]}" -eq 0 ] || log "[$project] deploying — compose definition changed: ${drifted[*]}"
 
     # ─── Deploying — verify signatures of in-scope images first ───────────
     # Cosign-verify only images matching $COSIGN_REQUIRE_REGEX (defaults to
@@ -488,13 +512,16 @@ deploy_site() {
     #               changed, even when the image: ref didn't but the
     #               digest behind a rolling tag did. --no-deps avoids
     #               churning the rest of the stack (no brief routing gap).
+    #               Skipped when only the compose definition changed:
+    #               the first pass has recreated those services.
     if ! "${DOCKER_COMPOSE[@]}" "${compose_args[@]}" up -d --wait 2>&1 \
         | sed "s/^/[$project]   up: /"; then
         err "[$project] docker compose up failed (first pass)"
         return 1
     fi
 
-    if ! "${DOCKER_COMPOSE[@]}" "${compose_args[@]}" up -d --wait \
+    if [ "${#changed[@]}" -gt 0 ] \
+        && ! "${DOCKER_COMPOSE[@]}" "${compose_args[@]}" up -d --wait \
             --force-recreate --no-deps "${changed[@]}" 2>&1 \
         | sed "s/^/[$project]   recreate: /"; then
         err "[$project] docker compose force-recreate failed (second pass)"
